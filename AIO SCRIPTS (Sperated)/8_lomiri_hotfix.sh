@@ -31,7 +31,7 @@ export DEBIAN_FRONTEND=noninteractive
 echo ">>> Forcing package configuration..."
 dpkg --configure -a || true
 apt-get update
-apt-get install -y lomiri lomiri-greeter ubuntu-touch-session lightdm
+apt-get install -y lomiri lomiri-greeter lomiri-desktop-session lightdm
 
 echo ">>> Purging GTK greeter to prevent hybrid boot..."
 apt-get purge -y lightdm-gtk-greeter || true

@@ -36,7 +36,7 @@ case $UI_CHOICE in
        UI_PKG="$CUSTOM_PKG xorg lightdm"
        UI_NAME="custom"
        ;;
-    *) UI_PKG="lomiri lomiri-greeter ubuntu-touch-session lightdm mir-graphics-drivers-desktop"; UI_NAME="lomiri" ;;
+    *) UI_PKG="lomiri lomiri-greeter lomiri-desktop-session lightdm mir-graphics-drivers-desktop"; UI_NAME="lomiri" ;;
 esac
 
 echo ""
