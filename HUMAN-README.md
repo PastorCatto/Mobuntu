@@ -49,7 +49,7 @@ STEP 3
 	[ The Build Scripts: Execution Order ]
 
 
-#### Broken AI Generate file layout, refer to the main README.MD 
+#### Broken AI Generate file layout below, refer to the main README.MD 
  
  
  
