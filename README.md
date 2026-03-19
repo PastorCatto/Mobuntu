@@ -101,8 +101,6 @@ Prebuilt images are planned once the **edge** kernel branch is fully stabilized 
 ### Massive Thanks ### 
 PostmarketOS (The whole postmarketOS community!) https://postmarketos.org/
 Debian (Trademark of Software in the Public Interest, Inc.) https://www.debian.org/ 
-Google Gemini
-YOU! (Happy flashing!)
 
 -----
 
