@@ -45,8 +45,8 @@
      timing out or hitting memory limits.
 
 5. The "Beryllium" Display Fix (v25.06 Lock)
-   The scripts are hardcoded to suggest the v25.06 stable channel. 
+   The scripts are hardcoded to suggest the edge channel. 
    Newer 'edge' kernels (6.14+) currently have a DSI-panel timing 
-   bug that causes a black screen. By locking to v25.06, we ensure 
+   bug that causes a black screen. Please pick v25.06, we ensure 
    the 'msm' DRM driver initializes the display before the 
-   Lomiri/XFCE greeter starts.
+   Lomiri/XFCE greeter starts. (pull an older kernel)
