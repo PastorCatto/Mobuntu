@@ -98,5 +98,11 @@ fastboot reboot
 
 Prebuilt images are planned once the **edge** kernel branch is fully stabilized and the "blank screen" bug on newer kernels is resolved. If you wish to contribute to the kernel debugging, please refer to the Engineering Report.
 
+### Massive Thanks ### 
+PostmarketOS (The whole postmarketOS community!) https://postmarketos.org/
+Debian (Trademark of Software in the Public Interest, Inc.) https://www.debian.org/ 
+Google Gemini
+YOU! (Happy flashing!)
+
 -----
 
