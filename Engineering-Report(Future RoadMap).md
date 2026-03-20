@@ -1,4 +1,8 @@
 
+<<<<<<< HEAD:Engineering-Report(Future RoadMap).md
+
+=======
+>>>>>>> origin/cattotest:Engineering-Report.md
 # Engineering Report: Beryllium Mainline Architecture
 **Project:** Ubuntu Desktop for POCO F1 (Beryllium)
 **Document Version:** 4.1 (Bootloader Retrospective & Channel Clarification)
