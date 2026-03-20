@@ -19,7 +19,7 @@ Rather than relying on pre-compiled, opaque system images, this toolset empowers
 | Requirement | Specification |
 | :--- | :--- |
 | **Host OS** | Ubuntu 24.04 LTS (Native PC, Container, or WSL) |
-| **Disk Space** | 60GB minimum (The script generates a 12GB+ RootFS, plus pmbootstrap caches) |
+| **Disk Space** | 50GB minimum (The script generates a 12GB+ RootFS, plus pmbootstrap caches) |
 | **Target Device** | POCO F1 (Beryllium) |
 | **Firmware Source** | Mobian Weekly SDM845 (For SSH hardware harvesting) or local archive |
 
