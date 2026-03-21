@@ -54,7 +54,7 @@ The Poco F1 utilizes UFS storage. If your target device uses eMMC, consider the 
 
 ### 3. Modifying the Firmware Donor (Script 3)
 If a Mobian build does not exist for your target device, you must modify the source of the mandatory harvest:
-* **From Android:** Update the SSH/SCP commands to pull from `/vendor/firmware` and `/system/etc/firmware`.
+* **From Mobian(Debian):** Update the SSH/SCP commands to pull from `/vendor/firmware` and `/system/etc/firmware`.
 * **From Local Files:** If you already have a verified firmware stash, replace the SSH logic with a local copy command (`cp -a`) targeting the `FIRMWARE_STASH` directory.
 
 ---
