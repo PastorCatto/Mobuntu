@@ -107,4 +107,4 @@ fastboot reboot
 For real-time development updates and support, join the Discord server:
 **PastorCatto's The ISLAND:** [https://discord.gg/RZV2HveyBg](https://discord.gg/RZV2HveyBg)
 
-Would you like me to add a specific section for the Adreno GPU firmware configuration to this README?
+(My dumbass forgot to remove what the AI asked me afterwards! lmao. i will re-do all of this once i hit stable on the POCO F1 as i intend to daily drive this distro!)
