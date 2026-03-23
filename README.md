@@ -74,7 +74,7 @@ Allocates the final system images, applies filesystem labels, and converts raw i
 **7_kernel_menuconfig.sh**
 Allows for manual kernel driver adjustments via the standard Linux menuconfig interface.
 
-### 8. Hardware Enablement (The Master Fix)
+### 8. Hardware Enablement (The Master Fix) (TESTING)
 **Qualcomm_Compiler.sh**
 The primary enablement script for SDM845 hardware. It automates the following in a protected environment:
 * **Audio:** Installs ALSA UCM profiles from the sdm845-mainline project for speaker and microphone routing.
