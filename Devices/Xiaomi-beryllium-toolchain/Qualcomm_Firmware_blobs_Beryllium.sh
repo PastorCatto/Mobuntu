@@ -53,7 +53,7 @@ echo "--- 4. Fetching missing GPU SQE Microcode ---"
 wget https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/qcom/a630_sqe.fw -O /lib/firmware/qcom/a630_sqe.fw
 cp /lib/firmware/qcom/a630_sqe.fw /lib/firmware/qcom/a630sqe.fw
 
-echo "--- 1. Patching WCN3990 WiFi Firmware ---"
+echo "--- 5. Patching WCN3990 WiFi Firmware ---"
 # Ensure the directory exists inside the chroot
 mkdir -p /lib/firmware/ath10k/WCN3990/hw1.0/
 
