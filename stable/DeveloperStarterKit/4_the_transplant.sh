@@ -27,22 +27,39 @@ else
     fi
 fi
 
-echo ">>> [Merge] Injecting pmOS kernels & firmware..."
+# ==============================================================================
+#                 START KERNEL, FIRMWARE & ALSA INJECTION
+# ==============================================================================
+echo ">>> [Merge] Injecting pmOS kernels & proprietary firmware blobs..."
 sudo cp -a pmos_harvest/lib/modules/. Ubuntu-Beryllium/lib/modules/
-sudo cp -a pmos_harvest/lib/firmware/. Ubuntu-Beryllium/lib/firmware/
 
+# 1. Flatten the postmarketOS firmware directory into the root firmware path (User Script Logic)
+sudo mkdir -p Ubuntu-Beryllium/lib/firmware/postmarketos
+if [ -d "pmos_harvest/lib/firmware/postmarketos" ]; then
+    sudo cp -a pmos_harvest/lib/firmware/postmarketos/* Ubuntu-Beryllium/lib/firmware/
+    sudo cp -a pmos_harvest/lib/firmware/postmarketos/* Ubuntu-Beryllium/lib/firmware/postmarketos/
+else
+    sudo cp -a pmos_harvest/lib/firmware/qca Ubuntu-Beryllium/lib/firmware/ 2>/dev/null || true
+    sudo cp -a pmos_harvest/lib/firmware/qcom Ubuntu-Beryllium/lib/firmware/ 2>/dev/null || true
+fi
+
+# 2. Inject ALSA UCM Audio Profiles for Snapdragon DSP (User Script Logic)
+echo ">>> [Merge] Harvesting ALSA UCM Audio Routing Profiles..."
+sudo mkdir -p Ubuntu-Beryllium/usr/share/alsa/ucm2/
+if [ -d "pmos_harvest/usr/share/alsa/ucm2" ]; then
+    sudo cp -a pmos_harvest/usr/share/alsa/ucm2/* Ubuntu-Beryllium/usr/share/alsa/ucm2/
+else
+    echo ">>> WARNING: ALSA UCM directory not found in harvest. Audio mapping might fail."
+fi
+
+# 3. Inject Kernels and Device Trees
 sudo mkdir -p Ubuntu-Beryllium/boot/
 sudo cp -L pmos_harvest/boot/vmlinuz* Ubuntu-Beryllium/boot/ || true
 sudo cp -L pmos_harvest/boot/initramfs* Ubuntu-Beryllium/boot/ || true
 if [ -d "pmos_harvest/boot/dtbs" ]; then
     sudo cp -Lr pmos_harvest/boot/dtbs Ubuntu-Beryllium/boot/
 fi
-
-echo ">>> [Merge] Injecting stashed Mobian hardware profiles..."
-if [ -d "$FIRMWARE_STASH/usr/share/alsa/ucm2" ]; then
-    sudo mkdir -p Ubuntu-Beryllium/usr/share/alsa/ucm2/
-    sudo cp -a "$FIRMWARE_STASH/usr/share/alsa/ucm2/." Ubuntu-Beryllium/usr/share/alsa/ucm2/ || true
-fi
+# ==============================================================================
 
 if [ "$SKIP_SETUP" == "no" ]; then
     
@@ -72,21 +89,35 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update && apt-get upgrade -y
 
-# Temporarily disable set -e for the UI install so minor warnings don't kill the script
 set +e
-
-# Pre-seed the debconf database so the display manager installs silently
 echo "$DM_PKG shared/default-x-display-manager select $DM_PKG" | debconf-set-selections
 
-# Install the full UI and Display Manager natively to ensure polkit/wayland configures correctly
-apt-get install -y $UI_PKG $DM_PKG modemmanager network-manager systemd-resolved
+# Install UI + Wi-Fi TFTP Dependencies
+apt-get install -y $UI_PKG $DM_PKG modemmanager network-manager systemd-resolved tqftpserv curl linux-firmware
 
-# Surgically rip LibreOffice out of the OS to save space
+# ==============================================================================
+#                  START POCO F1 WIFI & DSP HARDWARE FIXES
+# ==============================================================================
+echo ">>> Applying Poco F1 WCN3990 WiFi & TFTP Server Fixes..."
+
+# 1. Clean out compressed Zstandard files and the broken 60-byte kernel pointer
+rm -f /lib/firmware/ath10k/WCN3990/hw1.0/*.zst 2>/dev/null || true
+rm -f /lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin 2>/dev/null || true
+
+# 2. Download the pristine kernel firmware payload directly from kernel.org
+curl -s -o /lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath10k/WCN3990/hw1.0/firmware-5.bin
+
+# 3. Stage the DSP payload (wlanmdsp.mbn) in the root firmware directory.
+find /lib/firmware/ -name "wlanmdsp.mbn" -exec cp {} /lib/firmware/wlanmdsp.mbn \; -quit
+
+# 4. Enable the TFTP server daemon to start automatically on boot
+systemctl enable tqftpserv
+# ==============================================================================
+
 echo ">>> Purging LibreOffice bloatware..."
 apt-get purge -y libreoffice* || true
 apt-get autoremove -y
 
-# Hardcode the default display manager to ensure no black screens on boot
 echo "/usr/sbin/$DM_PKG" > /etc/X11/default-display-manager
 dpkg-reconfigure -f noninteractive $DM_PKG 2>/dev/null || true
 
