@@ -1,5 +1,6 @@
 # Ubuntu Desktop PocketEdition
 **Document Version 2.3 (Beryllium WiFi-Stable)**
+# OUT OF DATE (again) RC6+ no longer depends on pmbootstrap, we pull directly from mobian now! (documentation is relevant up to RC5)
 > **Note:** This README and the latest hardware-enablement logic were co-developed with an **AI collaborator**. Together, we’ve untangled the complex Qualcomm DSP boot sequence to bring full, stable hardware support to the Poco F1. This Entire 
 > project has been possible with Gemini Pro, as it has generated ALL the bash scripts we use to build this image. Everything is readable for a reason, and this whole setup is modular, so should be easy to maintian for longevity
 
