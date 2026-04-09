@@ -1,35 +1,35 @@
-# Ubuntu Desktop PocketEdition
-**Document Version 2.3 (Beryllium WiFi-Stable)**
-# OUT OF DATE (again) RC6+ no longer depends on pmbootstrap, we pull directly from mobian now! (documentation is relevant up to RC5)
+# Mobuntu Orange
+**Document Version 3.0a (The Droid-Juicer Update)**
+
 > **Note:** This README and the latest hardware-enablement logic were co-developed with an **AI collaborator**. Together, we’ve untangled the complex Qualcomm DSP boot sequence to bring full, stable hardware support to the Poco F1. This Entire 
 > project has been possible with Gemini Pro, as it has generated ALL the bash scripts we use to build this image. Everything is readable for a reason, and this whole setup is modular, so should be easy to maintian for longevity
 
 ---
 
-Ubuntu Desktop PocketEdition is an advanced porting toolkit designed to deploy a functional, desktop-class **Ubuntu Noble (24.04)** environment onto the **Xiaomi Poco F1 (beryllium)** and related Snapdragon 845 (SDM845) devices. 
+Mobuntu Orange is a series of scripts designed to build a Ubuntu Based image for SDM845 and other supported devices, end goal is to support the whole stack of devices Mobian supports with a Ubuntu release!
 
-By merging a **postmarketOS (pmOS)** kernel foundation with a vanilla Ubuntu RootFS and a surgically injected Qualcomm service stack, this project turns a 2018 flagship into a pocket-sized Linux workstation.
+With recent updates, we no longer depend on postmarketOS, and instead do everything inside the Chroot, and afterwards, pull the kernel and any required files and build the image on the Host.
 
 ---
 
 ## Technical Architecture: The Hybrid Transplant
 
-This toolkit constructs a functional OS by merging three distinct layers:
+This toolkit constructs a functional OS by doing a series of the following
 
-1.  **Hardware Foundation:** Stable kernel (mainline-based) and Device Tree Blobs (DTB) from **postmarketOS v25.06**.
-2.  **Operating System:** A vanilla **Ubuntu Noble (24.04)** ARM64 RootFS generated via `debootstrap`.
-3.  **The "Bridge" (New!):** A custom-configured **QRTR + TFTP** stack that allows the Linux kernel and the Hexagon DSP to swap firmware binaries in real-time, bypassing the traditional Android proprietary limitations.
+1.  **Ubuntu Rootfs:** so we need to build the OS, we do that using debootstrap, so we are able to pick and choose any avalible version and generate a chroot.
+2.  **Firmware Enablement Stack:** With RC7 of our build stack, we now utilize Droid-Juicer and fwload, only quirk seems to be rotation (very much testing as of writing)
+3.  **The Boot Stack (New!):** Previously i used to rely on pmbootstrap, but refering to issue#1, there was a better way, so now when the rootfs is made, we pull the kernel and everything, and pack it outside the chroot, so its easy to update the kernel, just install a newer version and remove the old one!
 
 ---
 
-## Recent Breakthroughs (Phase 6: Wireless & DSP Stability)
+## Recent Breakthroughs (Phase 7: the Independant update!)
 
-The latest version includes critical fixes for the **WCN3990 WiFi** chip and **TrustZone memory management**:
+The latest version introduces Droid-juicer, which should bypass the need to harvest the rest of the firmware:
 
-* **Dual-Path Firmware Injection:** Solved the "Invalid Magic" error by serving the **Atheros kernel binary** to the Linux driver while simultaneously serving the **Qualcomm DSP payload** via a local TFTP bridge.
-* **TFTP Server Automation:** Integrated `tqftpserv` natively into the build. The server is now pre-configured to handle the Poco F1's hardcoded Android firmware paths.
-* **Bus-Clear Protocol:** Implemented a "Safety Sabotage" of the crashing Sensor DSP (SLPI) firmware. This prevents the Hexagon watchdog from locking up the SCM (Secure Channel Manager), ensuring WiFi can always request power from the regulators.
-* **Zstd Purge:** Automatically strips `.zst` compressed firmware files that are known to cause silent initialization failures on the SDM845.
+* **Dual-Path Firmware Injection:** We use Droid-Juicer for a majority of the heavy lifting, but the GPU blobs still need to be aquired, hence 2 types of injections
+* **Multi-Device Builder:** with the introduction of RC7, we now have added initial support for both POCO F1 and now Oneplus 6/T and Xiaomi Mi 8 (UNTESTED!)
+* **Ubuntu Version Selector:** RC7 introduces the ability to choose a version of Ubuntu based on a query of availible repos for supported versions (as low as Trusty Tahr 14.04! 24.04 is the lowest SUPPORTED BY US!, anything lower is at YOUR OWN RISK!)
+
 
 
 
@@ -39,26 +39,25 @@ The latest version includes critical fixes for the **WCN3990 WiFi** chip and **T
 
 ### 1. Pre-Flight
 **`1_preflight.sh`**
-Configures your build environment, installs host dependencies (`qemu-user-static`, `debootstrap`), and records your desired UI (Phosh, GNOME, KDE, etc.) into `build.env`.
+Configures your build environment, installs host dependencies (`qemu-user-static`, `debootstrap`), and records your desired UI (Phosh, GNOME, KDE, etc.) into `build.env`. (With RC7+ builds, we also now store Ubuntu Versions as well!)
 
 ### 2. Kernel & UUID Sync
-**`2_pmos_setup.sh`**
-Initializes `pmbootstrap` and extracts the kernel. Critically, it syncs the **UUIDs** between your Ubuntu images and the pmOS initramfs to ensure the phone doesn't get stuck in a bootloop searching for a missing partition.
+**`2_Kernel_Setup.sh`**
+Due to the recent Deprecation of pmbootstrap, we now pull a kernel and image files directly from kernel.org, this download the required debs for the latest LTS kernel and injects them into /tmp for install inside the chroot after generation (gets picked up by Cooker script #4)
 
 ### 3. The Harvest (Deprecated/Internal)
 **`3_firmware_fetcher.sh`**
-Now serves as a legacy script. Firmware is now handled natively via the pmOS harvest and internal downloader logic in Script 4.
+Now serves as a legacy script. Firmware is now handled natively via the Kernel.org repo (formerly pmOS harvest) and internal downloader logic in Script 4.
 
 ### 4. The Transplant (Core Build)
-**`4_the_transplant.sh`**
+**`4_Rootfs_cooker.sh`**
 The heavy lifter. It builds the Ubuntu base and performs the **"Qualcomm Surgery"**:
-* Downloads pristine `firmware-5.bin` from `kernel.org`.
-* Stages `wlanmdsp.mbn` for the TFTP server.
-* Installs and enables the `tqftpserv` daemon.
+* Builds the basic Chroot (debootstrap)
+* apt Updates and installs the UI chosen by injected script thats run inside the chroot
 * Flattens the firmware directory structure to resolve pathing errors.
 
-### 5. Verification (New!)
-**`verify_chroot.sh`**
+### 5. Verification (OUTDATED, WILL RETURN)
+**`verify_chroot.sh`** DEPRECATED FOR NOW!
 A diagnostic tool to run before you flash. It checks for:
 * Presence of the 3.7MB WiFi payload.
 * Correct Display Manager configuration (GDM3/SDDM/LightDM).
@@ -68,6 +67,7 @@ A diagnostic tool to run before you flash. It checks for:
 ### 6. Finalization
 **`6_seal_rootfs.sh`**
 Allocates the final `.img` files, applies filesystem labels, and converts them into Android-compatible **Sparse Images** for fastboot.
+also generates the Boot.img and generated a UUID on the fly
 
 ---
 
@@ -76,15 +76,18 @@ Allocates the final `.img` files, applies filesystem labels, and converts them i
 With the device in **Fastboot mode**, run:
 
 ```bash
-fastboot flash boot pmos_boot.img
-fastboot flash system ubuntu_beryllium_boot.img
-fastboot flash userdata ubuntu_beryllium_root.img
-fastboot reboot
+fastboot flash boot Mobuntu_orange_boot
+
+(DEPRECATED! WOO!)fastboot flash system ubuntu_beryllium_boot.img
+
+fastboot flash userdata Mobuntu_orange_rootfs.img
+
+fastboot reboot (DO NOT UNPLUG UNTIL IT REBOOTS! ITS ACTIVELY WRITING TO NAND FROM RAM!)
 ```
 
 ---
 
-## Current Hardware Status (Beryllium)
+## RC4 Hardware Status (Beryllium)
 
 | Feature | Status | Note |
 | :--- | :--- | :--- |
@@ -115,4 +118,4 @@ For real-time development updates and support, join the Discord:
 *Special thanks to the postmarketOS and Mobian teams for providing the groundwork for SDM845 mainline support.*
 
 ---
-**Ubuntu Desktop PocketEdition** — *The desktop in your pocket.*
+**Mobuntu Orange** — *The orange looks nice on me, right?*
