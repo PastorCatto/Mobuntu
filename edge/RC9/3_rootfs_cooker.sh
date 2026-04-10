@@ -48,9 +48,9 @@ if [ "$FIRMWARE_METHOD" = "git" ] && [ -n "$FIRMWARE_REPO" ]; then
 
     if git clone --depth=1 "$FIRMWARE_REPO" "$FW_TMP/fw" 2>/dev/null; then
         echo ">>> Copying firmware into rootfs..."
-        sudo cp -r "$FW_TMP/fw/lib" "$ROOTFS_DIR/"
+        sudo cp -r "$FW_TMP/fw/lib/." "$ROOTFS_DIR/lib/"
         if [ -d "$FW_TMP/fw/usr" ]; then
-            sudo cp -r "$FW_TMP/fw/usr" "$ROOTFS_DIR/"
+            sudo cp -r "$FW_TMP/fw/usr/." "$ROOTFS_DIR/usr/"
         fi
         echo ">>> Firmware staged from $FIRMWARE_REPO"
     else
@@ -114,30 +114,33 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export DEBIAN_FRONTEND=noninteractive
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 
-# ------- 1. APT sources -------
-cat > /etc/apt/sources.list << APT_EOF
-deb http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_RELEASE} main restricted universe multiverse
-deb http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_RELEASE}-updates main restricted universe multiverse
-deb http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_RELEASE}-security main restricted universe multiverse
-APT_EOF
+# ------- 1. Ubuntu APT sources -------
+printf 'deb http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_RELEASE} main restricted universe multiverse\n' > /etc/apt/sources.list
+printf 'deb http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_RELEASE}-updates main restricted universe multiverse\n' >> /etc/apt/sources.list
+printf 'deb http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_RELEASE}-security main restricted universe multiverse\n' >> /etc/apt/sources.list
 
-# Add Mobian repo (phrog, qbootctl, droid-juicer)
+apt-get update
+
+# ------- 2. Bootstrap minimal tools (needed before Mobian repo) -------
+apt-get install -y curl wget ca-certificates gnupg
+
+# ------- 3. Add Mobian repo -------
 curl -fsSL https://repo.mobian.org/mobian.gpg -o /etc/apt/trusted.gpg.d/mobian.gpg
-echo "deb http://repo.mobian.org/ staging main non-free-firmware" \
+printf 'deb http://repo.mobian.org/ staging main non-free-firmware\n' \
     > /etc/apt/sources.list.d/mobian.list
 
 apt-get update
 apt-get upgrade -y
 
-# ------- 2. Base system -------
+# ------- 4. Base system -------
 apt-get install -y \
-    initramfs-tools sudo curl wget ca-certificates \
+    initramfs-tools sudo \
     network-manager modemmanager \
     linux-firmware bluez \
     pipewire pipewire-pulse wireplumber \
     openssh-server locales tzdata
 
-# ------- 3. Boot-method specific packages -------
+# ------- 5. Boot-method specific packages -------
 BOOT_METHOD="${BOOT_METHOD}"
 case "\$BOOT_METHOD" in
 mkbootimg)
@@ -155,46 +158,40 @@ uefi)
     ;;
 esac
 
-# ------- 4. SDM845 kernel -------
+# ------- 6. SDM845 kernel -------
 echo ">>> Installing kernel..."
 dpkg -i /tmp/kernel_payload/*.deb || apt-get install -f -y
 update-initramfs -c -k all
 
-# ------- 5. Phosh + greetd + phrog -------
+# ------- 7. Phosh + greetd + phrog -------
 echo ">>> Installing Phosh display stack..."
 apt-get install -y phosh phosh-osk-stub greetd phrog
 
 useradd -r -m -G video greeter 2>/dev/null || true
 
 mkdir -p /etc/greetd
-cat > /etc/greetd/config.toml << GREETD_EOF
-[terminal]
-vt = 1
-
-[default_session]
-command = "phrog"
-user = "greeter"
-GREETD_EOF
+printf '[terminal]\nvt = 1\n\n[default_session]\ncommand = "phrog"\nuser = "greeter"\n' \
+    > /etc/greetd/config.toml
 
 systemctl enable greetd
 systemctl disable gdm3    2>/dev/null || true
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable sddm    2>/dev/null || true
 
-# ------- 6. Device packages -------
+# ------- 8. Device packages -------
 if [ -n "${DEVICE_PACKAGES}" ]; then
     echo ">>> Installing device packages: ${DEVICE_PACKAGES}"
     apt-get install -y ${DEVICE_PACKAGES}
 fi
 
-# ------- 7. Firmware (apt method) -------
+# ------- 9. Firmware (apt method) -------
 FIRMWARE_METHOD="${FIRMWARE_METHOD}"
 if [ "\$FIRMWARE_METHOD" = "apt" ]; then
     echo ">>> Firmware method: apt (linux-firmware already installed)"
 fi
 # git method firmware was already staged before chroot
 
-# ------- 8. Adreno 630 GPU firmware (not device-signed, safe to curl) -------
+# ------- 10. Adreno 630 GPU firmware (not device-signed, safe to curl) -------
 echo ">>> Fetching Adreno 630 GPU firmware..."
 KERNEL_ORG="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
 fetch_fw() {
@@ -214,7 +211,7 @@ if [ "\$FIRMWARE_METHOD" != "git" ]; then
     fetch_fw "/lib/firmware/qcom/sdm845" "qcom/sdm845/a630_zap.mbn"
 fi
 
-# ------- 9. Device services -------
+# ------- 11. Device services -------
 if [ -n "${DEVICE_SERVICES}" ]; then
     echo ">>> Enabling device services: ${DEVICE_SERVICES}"
     for svc in ${DEVICE_SERVICES}; do
@@ -222,22 +219,19 @@ if [ -n "${DEVICE_SERVICES}" ]; then
     done
 fi
 
-# ------- 10. User account -------
+# ------- 12. User account -------
 echo ">>> Creating user: ${USERNAME}"
 useradd -m -s /bin/bash -G sudo,video,audio,netdev,dialout "${USERNAME}" || true
 echo "${USERNAME}:${PASSWORD}" | chpasswd
 echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/mobuntu-user
 chmod 0440 /etc/sudoers.d/mobuntu-user
 
-# ------- 11. Hostname -------
+# ------- 13. Hostname -------
 echo "${DEVICE_HOSTNAME}" > /etc/hostname
-cat > /etc/hosts << HOSTS_EOF
-127.0.0.1   localhost
-127.0.1.1   ${DEVICE_HOSTNAME}
-::1         localhost ip6-localhost ip6-loopback
-HOSTS_EOF
+printf '127.0.0.1   localhost\n127.0.1.1   ${DEVICE_HOSTNAME}\n::1         localhost ip6-localhost ip6-loopback\n' \
+    > /etc/hosts
 
-# ------- 12. Kernel hook -------
+# ------- 14. Kernel hook -------
 echo ">>> Installing zz-qcom-bootimg kernel hook..."
 mkdir -p /etc/kernel/postinst.d /etc/initramfs/post-update.d
 
@@ -302,10 +296,10 @@ cat > /etc/initramfs/post-update.d/bootimg << 'INITRD_HOOK_EOF'
 INITRD_HOOK_EOF
 chmod +x /etc/initramfs/post-update.d/bootimg
 
-# ------- 13. /boot/efi stub -------
+# ------- 15. /boot/efi stub -------
 mkdir -p /boot/efi
 
-# ------- 14. Extra packages -------
+# ------- 16. Extra packages -------
 if [ -n "${EXTRA_PKG}" ]; then
     echo ">>> Installing extra packages: ${EXTRA_PKG}"
     apt-get install -y ${EXTRA_PKG}
