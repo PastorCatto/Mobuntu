@@ -246,12 +246,12 @@ Check `/etc/kernel/postinst.d/zz-qcom-bootimg` is executable and `/etc/kernel/cm
 
 ## Planned (RC12)
 
--[x] ARM64 host support (skip QEMU, use direct chroot, added as of RC11)
--[] Watchdog script for build monitoring
--[] Modem investigation (WiFi/BT crash on modem init)
--[] phrog loading issue investigation
--[] U-Boot and UEFI boot method implementation (No UEFI, too much of a headache, port it at your own risk)
--[] Ubuntu 26.04 quill stable when released
+
+- Watchdog script for build monitoring
+- Modem investigation (WiFi/BT crash on modem init)
+- phrog loading issue investigation
+- U-Boot and UEFI boot method implementation (No UEFI, too much of a headache, port it at your own risk)
+- Ubuntu 26.04 quill stable when released
 
 ---
 
