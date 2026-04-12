@@ -33,7 +33,7 @@ Adding a new device requires only a `devices/<brand>-<codename>.conf` file — n
 | Touch | ✅ Working | Native kernel support |
 | Wi-Fi | ✅ Confirmed | ath10k, tested on device |
 | Bluetooth | ✅ Working | Confirmed on reference image |
-| Audio | ⚠️ Partial | ACDB calibration data included, may need UCM maps |
+| Audio |  ✅ Working | install alsa-ucm-conf from Ubuntu repo|
 | Cellular / LTE | ⚠️ Testing | Modem firmware present, SIM PIN workaround needed |
 | Sensors | 🧪 Partial | SLPI firmware included, iio-sensor-proxy required |
 | Camera | ❌ Not working | Out of scope for now |
