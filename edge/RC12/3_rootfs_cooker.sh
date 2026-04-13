@@ -237,6 +237,7 @@ apt-get install -y \
     network-manager modemmanager \
     linux-firmware bluez \
     pipewire pipewire-pulse wireplumber \
+    hexagonrpcd \
     openssh-server locales tzdata
 
 # ------- 5. Boot-method specific packages -------
@@ -344,6 +345,9 @@ if [ "$FIRMWARE_METHOD" != "git" ]; then
 fi
 
 # ------- 12. Device services -------
+echo ">>> Enabling hexagonrpcd (required for ADSP/audio)..."
+systemctl enable hexagonrpcd 2>/dev/null || true
+
 if [ -n "$DEVICE_SERVICES" ]; then
     echo ">>> Enabling device services: $DEVICE_SERVICES"
     for svc in $DEVICE_SERVICES; do
