@@ -10,9 +10,15 @@ Mobuntu Orange is a toolkit that builds a full Ubuntu ARM64 image for SDM845-bas
 No postmarketOS. No pmbootstrap. Everything is built from scratch inside a debootstrap chroot, then sealed and flashed via fastboot.
 
 (As of RC13, we arent just orange, we are now color coded to Ubuntu releases!)
-Ubuntu 24.04 = Orange   
-Ubuntu 26.04 = Pink
-Ubuntu DEVEL = Yellow (EDGE Builds are always Yellow!)
+
+Ubuntu 24.04 = Orange 
+
+Ubuntu 26.04 = Pink  
+
+Ubuntu DEVEL = Yellow 
+(EDGE Builds are always Yellow!)
+
+(Thought Color Coding would clean it up a bit!)
 ---
 
 ## Supported Devices
