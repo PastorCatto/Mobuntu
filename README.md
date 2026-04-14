@@ -19,6 +19,8 @@ Ubuntu DEVEL = Yellow
 (EDGE Builds are always Yellow!)
 
 (Thought Color Coding would clean it up a bit!)
+
+# I've enabled the "Template Repo" toggle for this repo! (wanted to wait until it was stable-ish!)
 ---
 
 ## Supported Devices
