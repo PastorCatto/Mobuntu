@@ -46,20 +46,29 @@ fi
 echo ">>> Staging kernel payload..."
 sudo cp -r kernel_payload/ "$ROOTFS_DIR/tmp/"
 
-echo ">>> Staging qcom-firmware initramfs hook..."
-QCOM_FW_HOOK="${SCRIPT_DIR}/firmware/${DEVICE_BRAND}-${DEVICE_CODENAME}/qcom-firmware"
-if [ -f "$QCOM_FW_HOOK" ]; then
-    echo ">>>   Using hook: $QCOM_FW_HOOK"
-    sudo cp "$QCOM_FW_HOOK" "$ROOTFS_DIR/tmp/qcom-firmware"
-    sudo chmod +x "$ROOTFS_DIR/tmp/qcom-firmware"
-else
-    echo ">>> WARNING: qcom-firmware hook not found."
-    echo ">>>   Place it at: firmware/${DEVICE_BRAND}-${DEVICE_CODENAME}/qcom-firmware"
-fi
+
 
 # Stage firmware archive into chroot for post-apt re-application
 SCRIPT_DIR="$(dirname "$0")"
 LOCAL_FW_ARCHIVE="${SCRIPT_DIR}/firmware/${DEVICE_BRAND}-${DEVICE_CODENAME}/firmware.tar.gz"
+
+echo ">>> Staging qcom-firmware initramfs hook..."
+QCOM_FW_HOOK_DEVICE="${SCRIPT_DIR}/firmware/${DEVICE_BRAND}-${DEVICE_CODENAME}/qcom-firmware"
+QCOM_FW_HOOK_ROOT="${SCRIPT_DIR}/qcom-firmware"
+echo ">>> Looking for qcom-firmware hook..."
+if [ -f "$QCOM_FW_HOOK_DEVICE" ]; then
+    echo ">>>   Found at: $QCOM_FW_HOOK_DEVICE"
+    sudo cp "$QCOM_FW_HOOK_DEVICE" "$ROOTFS_DIR/tmp/qcom-firmware"
+    sudo chmod +x "$ROOTFS_DIR/tmp/qcom-firmware"
+elif [ -f "$QCOM_FW_HOOK_ROOT" ]; then
+    echo ">>>   Found at project root: $QCOM_FW_HOOK_ROOT"
+    sudo cp "$QCOM_FW_HOOK_ROOT" "$ROOTFS_DIR/tmp/qcom-firmware"
+    sudo chmod +x "$ROOTFS_DIR/tmp/qcom-firmware"
+else
+    echo ">>> WARNING: qcom-firmware hook not found."
+    echo ">>>   Checked: $QCOM_FW_HOOK_DEVICE"
+    echo ">>>   Checked: $QCOM_FW_HOOK_ROOT"
+fi
 if [ -f "$LOCAL_FW_ARCHIVE" ]; then
     echo ">>> Staging firmware archive for post-apt re-application..."
     sudo cp "$LOCAL_FW_ARCHIVE" "$ROOTFS_DIR/tmp/firmware.tar.gz"
@@ -390,8 +399,13 @@ systemctl mask alsa-state 2>/dev/null || true
 systemctl mask alsa-restore 2>/dev/null || true
 
 echo ">>> Installing qcom-firmware initramfs hook..."
-cp /tmp/qcom-firmware /usr/share/initramfs-tools/hooks/qcom-firmware
-chmod +x /usr/share/initramfs-tools/hooks/qcom-firmware
+if [ -f /tmp/qcom-firmware ]; then
+    cp /tmp/qcom-firmware /usr/share/initramfs-tools/hooks/qcom-firmware
+    chmod +x /usr/share/initramfs-tools/hooks/qcom-firmware
+    echo ">>>   qcom-firmware hook installed."
+else
+    echo ">>>   WARNING: qcom-firmware hook not staged — skipping."
+fi
 
 echo ">>> Installing WirePlumber ALSA tuning config..."
 WP_CONF_SRC="${SCRIPT_DIR}/devices/${DEVICE_CODENAME}-51-qcom.conf"
