@@ -1,6 +1,7 @@
 # Mobuntu — Changelog
 
 > RC7–RC13 assisted by Claude Sonnet 4.6 (Anthropic)
+> Previous builds were assisted by Gemini 3.1 Pro (Up to RC6)
 > Substantial progress and direction thanks to **arkadin91** — Ubuntu 26.04 Beta reference image, Kupfer lead, sdm845-mainline firmware discovery, OTA script logic, WirePlumber tuning config, and pmaports device file discovery.
 
 ---
