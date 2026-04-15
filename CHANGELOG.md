@@ -111,7 +111,7 @@
 
 ---
 
-## RC12 / Pre-Release 1.1
+## RC12 / Pre-Release 1.0
 
 **Audio Investigation**
 - Ran diagnostic script against arkadin91's reference image (Ubuntu 26.04, April 9 build)
