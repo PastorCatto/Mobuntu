@@ -22,7 +22,7 @@ Ubuntu DEVEL = Yellow
 
 (Thought Color Coding would clean it up a bit!)
 
-# I've enabled the "Template Repo" toggle for this repo! (wanted to wait until it was stable-ish!)
+# I've DISABLED the "Template Repo" toggle for this repo! (Due to an upstream issue and chasing phantom issues, this repo will no longer be a template until i can address that, sorry!)
 ---
 
 ## Supported Devices
