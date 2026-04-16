@@ -1,7 +1,7 @@
 # Mobuntu (Now Color Coded!)
 **Document Version 4.4a — Pre-Release 1.0 "The Color/Colour Update!"**
 
-# Due to an unforeseen issue that was identified upstream, the release of 1.0 will be delayed until i can address that issue.
+# Due to an unforeseen issue that was identified upstream, the release of 1.0 will be delayed until i can address that issue personally.
 
 > Co-developed with Claude (Anthropic) and arkadin91 (reference image, firmware discovery, OTA script logic). Build scripts are intentionally readable and modular for long-term maintainability.
 
