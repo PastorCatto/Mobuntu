@@ -1,0 +1,18 @@
+# Mobuntu Orange — SDM845 remoteproc sequencing rule
+# Gates ADSP/CDSP/SLPI firmware loading until rmtfs + pd-mapper are confirmed running.
+# Without this, remoteproc fires at kernel boot before userspace daemons are ready,
+# the DSP firmware calls back for blobs, gets nothing, crashes, and the kernel
+# abandons the whole glink transport after ~60 seconds.
+#
+# Device: Xiaomi Poco F1 (beryllium) — SDM845
+# Source: adapted from pmaports device-xiaomi-beryllium
+
+# When remoteproc subsystem appears and ADSP is offline, defer to systemd
+SUBSYSTEM=="remoteproc", ACTION=="add", ATTR{name}=="adsp", \
+    RUN+="/usr/lib/udev/remoteproc-adsp-trigger.sh"
+
+SUBSYSTEM=="remoteproc", ACTION=="add", ATTR{name}=="cdsp", \
+    RUN+="/usr/lib/udev/remoteproc-adsp-trigger.sh"
+
+SUBSYSTEM=="remoteproc", ACTION=="add", ATTR{name}=="slpi", \
+    RUN+="/usr/lib/udev/remoteproc-adsp-trigger.sh"
