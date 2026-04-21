@@ -1,0 +1,259 @@
+#!/bin/bash
+# Mobuntu Orange — RC1-mkosi
+# mkosi.postinst — runs inside the image after package installation
+# Environment variables are injected from mkosi.conf [Build] Environment=
+set -e
+
+export DEBIAN_FRONTEND=noninteractive
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Alias MOBUNTU_ prefixed vars to short names for convenience
+UBUNTU_RELEASE="${MOBUNTU_UBUNTU_RELEASE}"
+USERNAME="${MOBUNTU_USERNAME}"
+PASSWORD="${MOBUNTU_PASSWORD}"
+DEVICE_HOSTNAME="${MOBUNTU_DEVICE_HOSTNAME}"
+DEVICE_CODENAME="${MOBUNTU_DEVICE_CODENAME}"
+DEVICE_BRAND="${MOBUNTU_DEVICE_BRAND}"
+DEVICE_PACKAGES="${MOBUNTU_DEVICE_PACKAGES}"
+DEVICE_SERVICES="${MOBUNTU_DEVICE_SERVICES}"
+BUILD_COLOR="${MOBUNTU_BUILD_COLOR}"
+BOOT_METHOD="${MOBUNTU_BOOT_METHOD}"
+FIRMWARE_METHOD="${MOBUNTU_FIRMWARE_METHOD}"
+
+echo ">>> [postinst] Starting Mobuntu Orange device setup..."
+
+# -------------------------------------------------------
+# 1. Hostname
+# -------------------------------------------------------
+echo "$DEVICE_HOSTNAME" > /etc/hostname
+printf "127.0.0.1   localhost\n127.0.1.1   ${DEVICE_HOSTNAME}\n::1         localhost ip6-localhost ip6-loopback\n" \
+    > /etc/hosts
+
+# -------------------------------------------------------
+# 2. User account
+# -------------------------------------------------------
+echo ">>> [postinst] Creating user: $USERNAME"
+useradd -m -s /bin/bash -G sudo,video,audio,netdev,dialout "$USERNAME" 2>/dev/null || true
+echo "$USERNAME:$PASSWORD" | chpasswd
+echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/mobuntu-user
+chmod 0440 /etc/sudoers.d/mobuntu-user
+
+# -------------------------------------------------------
+# 3. SDM845 kernel install
+# -------------------------------------------------------
+echo ">>> [postinst] Installing SDM845 kernel..."
+if ls /tmp/kernel_payload/*.deb &>/dev/null; then
+    dpkg -i /tmp/kernel_payload/*.deb || apt-get install -f -y
+else
+    echo ">>> WARNING: No kernel .deb found in /tmp/kernel_payload/"
+fi
+
+# -------------------------------------------------------
+# 4. Mobian GPG key (fallback if preflight couldn't fetch)
+# -------------------------------------------------------
+if [ ! -f /etc/apt/trusted.gpg.d/mobian.gpg ]; then
+    echo ">>> [postinst] Fetching Mobian GPG key..."
+    curl -fsSL https://repo.mobian.org/mobian.gpg \
+        -o /etc/apt/trusted.gpg.d/mobian.gpg 2>/dev/null || \
+        echo ">>> WARNING: Could not fetch Mobian GPG key."
+fi
+apt-get update -qq || true
+
+# -------------------------------------------------------
+# 5. alsa-ucm-conf pinned to release
+# -------------------------------------------------------
+echo ">>> [postinst] Installing alsa-ucm-conf..."
+apt-get install -y -t "$UBUNTU_RELEASE" alsa-ucm-conf 2>/dev/null || \
+    apt-get install -y alsa-ucm-conf
+
+# -------------------------------------------------------
+# 6. Device packages
+# -------------------------------------------------------
+if [ -n "$DEVICE_PACKAGES" ]; then
+    echo ">>> [postinst] Installing device packages: $DEVICE_PACKAGES"
+    apt-get install -y $DEVICE_PACKAGES
+fi
+
+# -------------------------------------------------------
+# 7. Re-apply firmware archive post-apt (wins over apt packages)
+# -------------------------------------------------------
+if [ -f /tmp/firmware.tar.gz ]; then
+    echo ">>> [postinst] Re-applying firmware archive..."
+    tar -xzf /tmp/firmware.tar.gz -C /
+fi
+
+# -------------------------------------------------------
+# 8. Adreno 630 GPU firmware
+# -------------------------------------------------------
+echo ">>> [postinst] Fetching Adreno 630 GPU firmware..."
+KERNEL_ORG="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
+fetch_fw() {
+    local DEST="$1" FILE="$2"
+    mkdir -p "$DEST"
+    curl -L -f -s -o "$DEST/$(basename $FILE)" "$KERNEL_ORG/$FILE" && \
+        echo ">>>   OK: $FILE" || echo ">>>   WARN: Failed to fetch $FILE (non-fatal)"
+    return 0
+}
+fetch_fw "/usr/lib/firmware/qcom" "qcom/a630_sqe.fw"
+fetch_fw "/usr/lib/firmware/qcom" "qcom/a630_gmu.bin"
+[ "$FIRMWARE_METHOD" != "git" ] && \
+    fetch_fw "/usr/lib/firmware/qcom/sdm845" "qcom/sdm845/a630_zap.mbn"
+
+# -------------------------------------------------------
+# 9. WirePlumber ALSA tuning
+# -------------------------------------------------------
+if [ -f /usr/lib/mobuntu/51-qcom.conf ]; then
+    echo ">>> [postinst] Installing WirePlumber ALSA tuning..."
+    mkdir -p /usr/share/wireplumber/wireplumber.conf.d
+    cp /usr/lib/mobuntu/51-qcom.conf \
+        /usr/share/wireplumber/wireplumber.conf.d/51-qcom.conf
+fi
+
+# -------------------------------------------------------
+# 10. qcom-firmware initramfs hook
+# -------------------------------------------------------
+if [ -f /usr/lib/mobuntu/qcom-firmware ]; then
+    echo ">>> [postinst] Installing qcom-firmware initramfs hook..."
+    cp /usr/lib/mobuntu/qcom-firmware \
+        /usr/share/initramfs-tools/hooks/qcom-firmware
+    chmod +x /usr/share/initramfs-tools/hooks/qcom-firmware
+fi
+
+# -------------------------------------------------------
+# 11. pmaports device files
+# -------------------------------------------------------
+if [ -f /usr/lib/mobuntu/q6voiced.conf ]; then
+    mkdir -p /etc/conf.d
+    cp /usr/lib/mobuntu/q6voiced.conf /etc/conf.d/q6voiced
+fi
+if [ -f /usr/lib/mobuntu/81-libssc.rules ]; then
+    mkdir -p /usr/lib/udev/rules.d
+    cp /usr/lib/mobuntu/81-libssc.rules /usr/lib/udev/rules.d/81-libssc.rules
+fi
+
+# hexagonrpcd ADSP config
+mkdir -p /etc/conf.d
+cat > /etc/conf.d/hexagonrpcd << HEXEOF
+# Mobuntu Orange — hexagonrpcd config
+HEXAGONRPCD_ARGS="-d adsp -R /usr/share/qcom/sdm845/Xiaomi/beryllium"
+HEXEOF
+
+# -------------------------------------------------------
+# 12. Service ordering
+# -------------------------------------------------------
+echo ">>> [postinst] Configuring service ordering..."
+mkdir -p /etc/systemd/system/pd-mapper.service.d
+printf '[Unit]\nAfter=qrtr-ns.service\nRequires=qrtr-ns.service\n' \
+    > /etc/systemd/system/pd-mapper.service.d/ordering.conf
+
+mkdir -p /etc/systemd/system/rmtfs.service.d
+printf '[Unit]\nAfter=qrtr-ns.service\nRequires=qrtr-ns.service\n' \
+    > /etc/systemd/system/rmtfs.service.d/ordering.conf
+
+# hexagonrpcd ordering drop-in already staged via mkosi.extra/
+# confirms: After=multi-user.target
+
+# -------------------------------------------------------
+# 13. Enable services
+# -------------------------------------------------------
+echo ">>> [postinst] Enabling Qualcomm services..."
+for svc in qrtr-ns rmtfs pd-mapper tqftpserv hexagonrpcd; do
+    systemctl enable $svc 2>/dev/null || true
+done
+
+echo ">>> [postinst] Masking conflicting ALSA services..."
+systemctl mask alsa-state alsa-restore 2>/dev/null || true
+
+if [ -n "$DEVICE_SERVICES" ]; then
+    for svc in $DEVICE_SERVICES; do
+        systemctl enable $svc 2>/dev/null || true
+    done
+fi
+
+# -------------------------------------------------------
+# 14. Build mkbootimg natively (ARM64)
+# -------------------------------------------------------
+echo ">>> [postinst] Building mkbootimg natively for ARM64..."
+rm -rf /tmp/mkbootimg-build
+git clone --depth=1 https://github.com/osm0sis/mkbootimg /tmp/mkbootimg-build
+sed -i 's/-Werror//g' /tmp/mkbootimg-build/Makefile
+sed -i 's/-Werror//g' /tmp/mkbootimg-build/libmincrypt/Makefile
+make -C /tmp/mkbootimg-build
+cp /tmp/mkbootimg-build/mkbootimg /usr/local/bin/mkbootimg
+cp /tmp/mkbootimg-build/unpackbootimg /usr/local/bin/unpackbootimg
+chmod +x /usr/local/bin/mkbootimg /usr/local/bin/unpackbootimg
+rm -rf /tmp/mkbootimg-build
+echo ">>>   mkbootimg (ARM64 native) installed."
+
+# -------------------------------------------------------
+# 15. Kernel hook (zz-qcom-bootimg)
+# -------------------------------------------------------
+echo ">>> [postinst] Installing kernel hooks..."
+mkdir -p /etc/kernel/postinst.d /etc/initramfs/post-update.d
+
+cat > /etc/kernel/postinst.d/zz-qcom-bootimg << 'HOOKEOF'
+#!/bin/bash
+set -e
+KERNEL_VERSION="$1"
+case "$KERNEL_VERSION" in *sdm845*) ;; *) exit 0 ;; esac
+
+KERNEL="/boot/vmlinuz-${KERNEL_VERSION}"
+INITRD="/boot/initrd.img-${KERNEL_VERSION}"
+CMDLINE_FILE="/etc/kernel/cmdline"
+BOOT_IMG="/boot/boot.img"
+BOOT_DTB_FILE="/etc/kernel/boot_dtb"
+
+[ -f "$KERNEL" ]       || exit 0
+[ -f "$INITRD" ]       || exit 0
+[ -f "$CMDLINE_FILE" ] || exit 0
+
+DTB_NAME=$(cat "$BOOT_DTB_FILE" 2>/dev/null || echo "sdm845-xiaomi-beryllium-tianma.dtb")
+DTB="/usr/lib/linux-image-${KERNEL_VERSION}/qcom/${DTB_NAME}"
+
+if [ ! -f "$DTB" ]; then
+    echo "WARNING: DTB not found at $DTB, skipping boot.img rebuild."
+    exit 0
+fi
+
+CMDLINE=$(cat "$CMDLINE_FILE")
+KERNEL_DTB=$(mktemp /tmp/kernel-dtb-XXXX)
+cat "$KERNEL" "$DTB" > "$KERNEL_DTB"
+mkbootimg \
+    --kernel "$KERNEL_DTB" \
+    --ramdisk "$INITRD" \
+    --pagesize 4096 \
+    --base 0x00000000 \
+    --kernel_offset 0x00008000 \
+    --ramdisk_offset 0x01000000 \
+    --tags_offset 0x00000100 \
+    --cmdline "$CMDLINE" \
+    -o "$BOOT_IMG"
+rm -f "$KERNEL_DTB"
+echo ">>> boot.img rebuilt: $BOOT_IMG"
+HOOKEOF
+chmod +x /etc/kernel/postinst.d/zz-qcom-bootimg
+
+cat > /etc/initramfs/post-update.d/bootimg << 'INITRDEOF'
+#!/bin/sh
+/etc/kernel/postinst.d/zz-qcom-bootimg "$1"
+INITRDEOF
+chmod +x /etc/initramfs/post-update.d/bootimg
+
+# -------------------------------------------------------
+# 16. Regenerate initramfs with firmware in place
+# -------------------------------------------------------
+echo ">>> [postinst] Regenerating initramfs..."
+update-initramfs -u -k all
+
+# -------------------------------------------------------
+# 17. /boot/efi stub
+# -------------------------------------------------------
+mkdir -p /boot/efi
+
+# -------------------------------------------------------
+# 18. Cleanup
+# -------------------------------------------------------
+rm -rf /tmp/kernel_payload /tmp/firmware.tar.gz
+apt-get clean
+
+echo ">>> [postinst] Mobuntu Orange device setup complete."

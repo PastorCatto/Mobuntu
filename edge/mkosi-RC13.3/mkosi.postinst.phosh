@@ -1,0 +1,19 @@
+#!/bin/bash
+# Mobuntu Orange — RC1-mkosi
+# Profile postinst: phosh
+set -e
+
+echo ">>> [phosh] Configuring Phosh display manager..."
+
+useradd -r -m -G video greeter 2>/dev/null || true
+mkdir -p /etc/greetd
+printf '[terminal]\nvt = 1\n\n[default_session]\ncommand = "phosh"\nuser = "greeter"\n' \
+    > /etc/greetd/config.toml
+systemctl enable greetd 2>/dev/null || true
+
+# Disable competing DMs
+for dm in gdm3 lightdm sddm; do
+    systemctl disable $dm 2>/dev/null || true
+done
+
+echo ">>> [phosh] Done."
