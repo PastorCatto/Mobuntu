@@ -1,0 +1,12 @@
+[Unit]
+Description=Mobuntu — Rebind fastrpc after rmtfs and pd-mapper are ready
+After=rmtfs.service pd-mapper.service qrtr-ns.service
+Requires=rmtfs.service pd-mapper.service qrtr-ns.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/mobuntu/fastrpc-rebind.sh
+
+[Install]
+WantedBy=multi-user.target

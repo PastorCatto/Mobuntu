@@ -1,0 +1,15 @@
+#!/bin/bash
+# Mobuntu Orange — RC1-mkosi
+# Profile postinst: plasma-mobile
+set -e
+
+echo ">>> [plasma-mobile] Configuring SDDM display manager..."
+
+systemctl enable sddm 2>/dev/null || true
+
+# Disable competing DMs
+for dm in gdm3 lightdm greetd; do
+    systemctl disable $dm 2>/dev/null || true
+done
+
+echo ">>> [plasma-mobile] Done."
