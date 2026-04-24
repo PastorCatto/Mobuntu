@@ -84,7 +84,7 @@
 
 ---
 
-## RC13 (Current Stable)
+## RC13 
 
 **Branding**
 - Project renamed from Mobuntu Orange to Mobuntu
@@ -302,3 +302,6 @@
 - `basename: missing operand` fixed
 - binfmt not active on WSL2 fixed
 - `Exec format error` in chroot fixed
+
+
+*Mobuntu — You don't realise how good it is, until its gone* 
