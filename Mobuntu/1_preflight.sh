@@ -72,9 +72,9 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     xz-utils gzip zip ca-certificates rsync \
     dosfstools uuid-runtime \
     android-sdk-libsparse-utils \
-    lz4 qemu-system-aarch64 systemd-container \
-    qemu-user-static qemu-system-x86 binfmt-support \
-    golang libglib2.0-dev libostree-dev busybox-static
+    lz4 qemu-system-aarch64 \
+    qemu-user-static binfmt-support \
+    golang libglib2.0-dev libostree-dev
 
 # Install debos if not present
 if ! command -v debos &>/dev/null; then
@@ -106,7 +106,7 @@ if ! command -v mkbootimg &>/dev/null; then
     rm -rf /tmp/mkbootimg-tool
 fi
 
-# Ensure resolute known to debootstrap
+# Ensure resolute suite known to debootstrap
 if [ ! -f /usr/share/debootstrap/scripts/resolute ]; then
     sudo ln -sf /usr/share/debootstrap/scripts/gutsy \
         /usr/share/debootstrap/scripts/resolute
@@ -160,7 +160,7 @@ echo ""
 echo "Ubuntu release:"
 echo "1) noble    (24.04 LTS)"
 echo "2) oracular (24.10)"
-echo "3) resolute (26.04 beta — recommended)"
+echo "3) resolute (26.04 LTS — recommended)"
 read -p "Choice [1-3, default 3]: " REL_CHOICE
 case ${REL_CHOICE:-3} in
     1) UBUNTU_RELEASE="noble"    ;;
