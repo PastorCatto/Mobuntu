@@ -1,0 +1,36 @@
+[versions]
+agp             = "8.5.2"
+kotlin          = "2.0.21"
+coreKtx         = "1.13.1"
+lifecycle       = "2.8.4"
+activityCompose = "1.9.1"
+composeBom      = "2024.08.00"
+navigation      = "2.7.7"
+datastore       = "1.1.1"
+workmanager     = "2.9.1"
+okhttp          = "4.12.0"
+libsu           = "5.2.1"
+coroutines      = "1.8.1"
+
+[libraries]
+androidx-core-ktx            = { group = "androidx.core",          name = "core-ktx",               version.ref = "coreKtx" }
+androidx-lifecycle-runtime   = { group = "androidx.lifecycle",     name = "lifecycle-runtime-ktx",  version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel = { group = "androidx.lifecycle",     name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-activity-compose    = { group = "androidx.activity",      name = "activity-compose",        version.ref = "activityCompose" }
+compose-bom                  = { group = "androidx.compose",       name = "compose-bom",             version.ref = "composeBom" }
+compose-ui                   = { group = "androidx.compose.ui",    name = "ui" }
+compose-ui-tooling-preview   = { group = "androidx.compose.ui",    name = "ui-tooling-preview" }
+compose-ui-tooling           = { group = "androidx.compose.ui",    name = "ui-tooling" }
+compose-material3            = { group = "androidx.compose.material3", name = "material3" }
+navigation-compose           = { group = "androidx.navigation",    name = "navigation-compose",      version.ref = "navigation" }
+datastore-prefs              = { group = "androidx.datastore",     name = "datastore-preferences",   version.ref = "datastore" }
+workmanager-ktx              = { group = "androidx.work",          name = "work-runtime-ktx",        version.ref = "workmanager" }
+okhttp                       = { group = "com.squareup.okhttp3",   name = "okhttp",                  version.ref = "okhttp" }
+libsu-core                   = { group = "com.github.topjohnwu.libsu", name = "core",                version.ref = "libsu" }
+libsu-service                = { group = "com.github.topjohnwu.libsu", name = "service",             version.ref = "libsu" }
+coroutines-android           = { group = "org.jetbrains.kotlinx",  name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android      = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose      = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
