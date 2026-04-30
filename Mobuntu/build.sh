@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# debos requires root for debootstrap
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Re-running as root (debos requires it)..."
+    exec sudo "$0" "$@"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
