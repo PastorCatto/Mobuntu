@@ -2,7 +2,7 @@
 
 Multi-device Ubuntu ARM64 image builder for SDM845 phones.
 Built on top of [arkadin91/mobuntu-recipes](https://github.com/arkadin91/mobuntu-recipes),
-with multi-device scaffolding and Mobuntu Orange customizations.
+with multi-device scaffolding and Mobuntu customizations.
 
 ## Requirements
 
