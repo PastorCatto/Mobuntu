@@ -1,4 +1,4 @@
-# Mobuntu Orange — Developer Documentation
+# Mobuntu — Developer Documentation
 **Grand Developer Kit Reset — May 1, 2026**
 
 ---
