@@ -1,4 +1,4 @@
-# Mobuntu Orange — Changelog
+# Mobuntu — Changelog
 **Grand Developer Kit Reset — May 1, 2026**
 
 ---
