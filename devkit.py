@@ -32,7 +32,9 @@ except ImportError:
 SCRIPT_DIR  = Path(__file__).parent.resolve()
 FORK_DIR    = SCRIPT_DIR / "Mobuntu"
 DEVICES_DIR = FORK_DIR / "devices"
-SYNC_SCRIPT = SCRIPT_DIR / "sync.py"
+SYNC_SCRIPT   = SCRIPT_DIR / "sync.py"
+BUILD_LOG     = Path.home() / ".mobuntu-build.log"
+BUILD_SESSION = "mobuntu-build"
 
 # ── Colours (pair indices) ────────────────────────────────────────────────────
 C_NORMAL    = 1
@@ -568,6 +570,16 @@ class DevKit:
         focus = self.focus == "nav"
         self._draw_border(win, "Navigation", focus)
 
+        if self.state.get("lockout"):
+            try:
+                win.addstr(h // 2 - 1, 2, "!! LOCKOUT MODE !!",
+                           curses.color_pair(C_WARN) | curses.A_BOLD)
+                win.addstr(h // 2,     2, "Build in progress",
+                           curses.color_pair(C_DIM))
+            except curses.error:
+                pass
+            return
+
         visible_start = max(0, self.nav_idx - (h - 3))
         for row, (depth, node) in enumerate(self._flat):
             y = row - visible_start + 1
@@ -620,9 +632,14 @@ class DevKit:
         try:
             win.border()
             self.progress.render(win, 1, 1, w - 2)
-            hint = " Tab:switch pane  ↑↓:navigate  Enter:select  q:quit  r:refresh "
-            win.addstr(0, max(2, w - len(hint) - 2), hint,
-                       curses.color_pair(C_DIM))
+            if self.state.get("lockout"):
+                hint = " !! WARNING: DevKit is in LOCKOUT mode — Build in progress, all input disabled !! "
+                win.addstr(0, max(2, w - len(hint) - 2), hint,
+                           curses.color_pair(C_WARN) | curses.A_BOLD)
+            else:
+                hint = " Tab:switch pane  ↑↓:navigate  Enter:select  q:quit  r:refresh "
+                win.addstr(0, max(2, w - len(hint) - 2), hint,
+                           curses.color_pair(C_DIM))
         except curses.error:
             pass
 
@@ -654,6 +671,10 @@ class DevKit:
 
     def handle_key(self, key):
         node = self.selected_node
+
+        # Block all input during lockout
+        if self.state.get("lockout"):
+            return True
 
         if key in (ord('q'), ord('Q')):
             if self.state.get("show_log") and                self.state.get("build_log_status") != "running":
@@ -774,13 +795,22 @@ class DevKit:
             self.progress.done("build.sh not found in Mobuntu/")
             return
 
-        # Switch content pane to log view
+        conf_path = DEVICES_DIR / codename / "device.conf"
+        device_ui = "ubuntu-desktop-minimal"
+        if conf_path.exists():
+            for line in conf_path.read_text().splitlines():
+                if line.startswith("DEVICE_UI="):
+                    device_ui = line.split("=", 1)[1].strip().strip('"'  )
+                    break
+
+        # Enter lockout mode
         self.state["build_log_device"] = codename
         self.state["build_log_lines"]  = []
         self.state["build_log_status"] = "running"
         self.state["show_log"]         = True
+        self.state["lockout"]          = True
 
-        cmd = ["bash", str(build_sh), "-d", codename]
+        cmd = ["bash", str(build_sh), "-d", codename, "-u", device_ui]
         self.progress.update(f"Building {codename}...", 0.1)
 
         try:
@@ -788,19 +818,20 @@ class DevKit:
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, cwd=str(FORK_DIR), bufsize=1)
 
-            total_steps = 6  # rough estimate of debos stages
+            total_steps = 8
             step = 0
             for line in proc.stdout:
                 line = line.rstrip()
                 self.state["build_log_lines"].append(line)
                 if "====" in line:
                     step = min(step + 1, total_steps)
-                    self.progress.update(line.strip("= ").strip(), step / total_steps)
+                    self.progress.update(line.strip("= ").strip(),
+                                         step / total_steps)
 
             proc.wait()
             if proc.returncode == 0:
                 self.state["build_log_status"] = "complete"
-                self.progress.done(f"Build complete: {codename}")
+                self.progress.done("Build complete")
             else:
                 self.state["build_log_status"] = "failed"
                 self.progress.done(f"Build failed — see log")
@@ -808,6 +839,8 @@ class DevKit:
             self.state["build_log_status"] = "error"
             self.state["build_log_lines"].append(str(e))
             self.progress.done(f"Error: {e}")
+        finally:
+            self.state["lockout"] = False
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -819,6 +852,8 @@ class DevKit:
 
         self.progress.update("Mobuntu DevKit ready", 0.0)
         self.progress.active = False
+
+
 
         running = True
         while running:
@@ -856,11 +891,11 @@ def main():
         download_file(url, dest, _StdoutProgress())
         return
 
-    # Re-exec as root if needed — build.sh requires it
+    # Warn if not root — build.sh requires it
     if os.geteuid() != 0:
-        print("Mobuntu DevKit requires root for build operations.")
-        print("Re-launching with sudo...")
-        os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+        print("WARNING: Mobuntu DevKit should be run as root for build operations.")
+        print("Run: sudo python3 devkit.py")
+        time.sleep(2)
 
     curses.wrapper(lambda s: DevKit(s).run())
 
