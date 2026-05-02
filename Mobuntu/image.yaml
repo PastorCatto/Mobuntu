@@ -51,6 +51,11 @@ actions:
 
   - action: run
     chroot: true
+    description: Fix resolv.conf for chroot network access
+    command: rm -rf /etc/resolv.conf && echo "nameserver 1.1.1.1" > /etc/resolv.conf
+
+  - action: run
+    chroot: true
     command: bash /usr/local/sbin/update-apt.sh
 
   - action: overlay
@@ -66,4 +71,14 @@ actions:
   - action: run
     description: Extract and compact rootfs partition from image
     postprocess: true
-    command: dd if={{ $image }} skip=17408 of=root-{{ $image }} iflag=skip_bytes,count_bytes && e2fsck -fy root-{{ $image }} && resize2fs -f -M root-{{ $image }}
+    command: dd if={{ $image }} skip=17408 of=root-{{ $image }} iflag=skip_bytes,count_bytes && e2fsck -fy root-{{ $image }}; e2fsck -fy root-{{ $image }} && resize2fs -f -M root-{{ $image }}
+
+  - action: run
+    description: Extract boot.img from rootfs partition
+    postprocess: true
+    command: >-
+      mkdir -p /tmp/mobuntu-boot &&
+      mount -o loop,ro root-{{ $image }} /tmp/mobuntu-boot &&
+      cp /tmp/mobuntu-boot/boot/boot.img boot-{{ $image }} &&
+      umount /tmp/mobuntu-boot &&
+      rmdir /tmp/mobuntu-boot

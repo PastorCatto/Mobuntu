@@ -32,7 +32,9 @@ except ImportError:
 SCRIPT_DIR  = Path(__file__).parent.resolve()
 FORK_DIR    = SCRIPT_DIR / "Mobuntu"
 DEVICES_DIR = FORK_DIR / "devices"
-SYNC_SCRIPT = SCRIPT_DIR / "sync.py"
+SYNC_SCRIPT   = SCRIPT_DIR / "sync.py"
+BUILD_LOG     = Path.home() / ".mobuntu-build.log"
+BUILD_SESSION = "mobuntu-build"
 
 # ── Colours (pair indices) ────────────────────────────────────────────────────
 C_NORMAL    = 1
@@ -210,6 +212,25 @@ def render_device(win, codename, state):
             put(ln, 4, f"{d:<10} {dtb}{default}", curses.color_pair(C_NORMAL))
             ln += 1
 
+    # ── UI picker ────────────────────────────────────────────────────────────
+    ln += 1
+    put(ln, 2, "UI:", curses.color_pair(C_HEADER))
+    ln += 1
+    ui_options  = ["ubuntu-desktop-minimal", "phosh", "plasma-mobile"]
+    current_ui  = conf.get("DEVICE_UI", "ubuntu-desktop-minimal")
+    ui_section  = state.get(f"device_section:{codename}", "ui") == "ui"
+    ui_idx      = state.get(f"device_ui_idx:{codename}",
+                            ui_options.index(current_ui) if current_ui in ui_options else 0)
+    state[f"device_ui_options:{codename}"] = ui_options
+
+    for i, ui in enumerate(ui_options):
+        sel  = i == ui_idx and state.get("content_focus_active") and ui_section
+        mark = "(x)" if sel else "( )"
+        attr = (curses.color_pair(C_SELECTED) | curses.A_BOLD) if sel                else curses.color_pair(C_NORMAL)
+        tag  = " <- current" if ui == current_ui else ""
+        put(ln, 4, f"{mark} {ui}{tag}", attr)
+        ln += 1
+
     ln += 1
     put(ln, 2, "Actions:", curses.color_pair(C_HEADER))
     ln += 1
@@ -335,6 +356,40 @@ def render_about(win, state):
         ln += 1
         if ln >= h - 2:
             break
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Log view
+# ══════════════════════════════════════════════════════════════════════════════
+
+def render_log(win, state):
+    """Full-pane live build log view."""
+    h, w = win.getmaxyx()
+
+    def put(y, x, text, attr=0):
+        try:
+            win.addstr(y, x, text[:w - x - 1], attr)
+        except curses.error:
+            pass
+
+    codename = state.get("build_log_device", "")
+    status   = state.get("build_log_status", "running")
+
+    title_attr = curses.color_pair(C_HEADER) | curses.A_BOLD
+    put(0, 2, f" Build Log: {codename} [{status}] ", title_attr)
+    put(1, 2, "─" * (w - 4), curses.color_pair(C_BORDER))
+
+    lines = state.get("build_log_lines", [])
+    # Show last (h - 4) lines so newest is always visible
+    visible = lines[-(h - 4):] if len(lines) > h - 4 else lines
+    for i, line in enumerate(visible):
+        y = i + 2
+        if y >= h - 2:
+            break
+        attr = curses.color_pair(C_WARN) if "error" in line.lower() or "fail" in line.lower()                else curses.color_pair(C_OK) if "done" in line.lower() or "complete" in line.lower()                else curses.color_pair(C_NORMAL)
+        put(y, 2, line, attr)
+
+    put(h - 1, 2, " [Q] Quit log view ", curses.color_pair(C_KEY))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -515,6 +570,16 @@ class DevKit:
         focus = self.focus == "nav"
         self._draw_border(win, "Navigation", focus)
 
+        if self.state.get("lockout"):
+            try:
+                win.addstr(h // 2 - 1, 2, "!! LOCKOUT MODE !!",
+                           curses.color_pair(C_WARN) | curses.A_BOLD)
+                win.addstr(h // 2,     2, "Build in progress",
+                           curses.color_pair(C_DIM))
+            except curses.error:
+                pass
+            return
+
         visible_start = max(0, self.nav_idx - (h - 3))
         for row, (depth, node) in enumerate(self._flat):
             y = row - visible_start + 1
@@ -541,6 +606,12 @@ class DevKit:
         focus = self.focus == "content"
         node  = self.selected_node
         win.erase()
+
+        # Override with log view during/after build
+        if self.state.get("show_log"):
+            render_log(win, self.state)
+            return
+
         self._draw_border(win, node.label.strip(), focus)
 
         key = node.key
@@ -561,9 +632,14 @@ class DevKit:
         try:
             win.border()
             self.progress.render(win, 1, 1, w - 2)
-            hint = " Tab:switch pane  ↑↓:navigate  Enter:select  q:quit  r:refresh "
-            win.addstr(0, max(2, w - len(hint) - 2), hint,
-                       curses.color_pair(C_DIM))
+            if self.state.get("lockout"):
+                hint = " !! WARNING: DevKit is in LOCKOUT mode — Build in progress, all input disabled !! "
+                win.addstr(0, max(2, w - len(hint) - 2), hint,
+                           curses.color_pair(C_WARN) | curses.A_BOLD)
+            else:
+                hint = " Tab:switch pane  ↑↓:navigate  Enter:select  q:quit  r:refresh "
+                win.addstr(0, max(2, w - len(hint) - 2), hint,
+                           curses.color_pair(C_DIM))
         except curses.error:
             pass
 
@@ -596,7 +672,14 @@ class DevKit:
     def handle_key(self, key):
         node = self.selected_node
 
+        # Block all input during lockout
+        if self.state.get("lockout"):
+            return True
+
         if key in (ord('q'), ord('Q')):
+            if self.state.get("show_log") and                self.state.get("build_log_status") != "running":
+                self.state["show_log"] = False
+                return True
             return False
 
         elif key == ord('\t'):
@@ -637,31 +720,70 @@ class DevKit:
                     t.start()
 
             elif node.key.startswith("device:"):
-                codename = node.key.split(":", 1)[1]
-                akey     = f"device_action:{codename}"
-                actions  = self.state.get(f"device_actions:{codename}", [])
-                n_acts   = len(actions)
+                codename   = node.key.split(":", 1)[1]
+                section    = self.state.get(f"device_section:{codename}", "ui")
+                ui_options = self.state.get(f"device_ui_options:{codename}",
+                                            ["ubuntu-desktop-minimal", "phosh", "plasma-mobile"])
+                n_ui       = len(ui_options)
+                actions    = self.state.get(f"device_actions:{codename}", [])
+                n_acts     = len(actions)
 
                 if key == curses.KEY_UP:
-                    self.state[akey] = (self.state.get(akey, 0) - 1) % max(1, n_acts)
+                    if section == "ui":
+                        idx = self.state.get(f"device_ui_idx:{codename}", 0)
+                        if idx == 0:
+                            pass  # top of ui section
+                        else:
+                            self.state[f"device_ui_idx:{codename}"] = idx - 1
+                    else:
+                        idx = self.state.get(f"device_action:{codename}", 0)
+                        if idx == 0:
+                            self.state[f"device_section:{codename}"] = "ui"
+                        else:
+                            self.state[f"device_action:{codename}"] = idx - 1
+
                 elif key == curses.KEY_DOWN:
-                    self.state[akey] = (self.state.get(akey, 0) + 1) % max(1, n_acts)
+                    if section == "ui":
+                        idx = self.state.get(f"device_ui_idx:{codename}", 0)
+                        if idx >= n_ui - 1:
+                            self.state[f"device_section:{codename}"] = "actions"
+                        else:
+                            self.state[f"device_ui_idx:{codename}"] = idx + 1
+                    else:
+                        idx = self.state.get(f"device_action:{codename}", 0)
+                        self.state[f"device_action:{codename}"] = min(idx + 1, n_acts - 1)
+
                 elif key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
-                    idx    = self.state.get(akey, 0)
-                    action = actions[idx][0] if actions else None
-                    if action == "build":
-                        self.progress.update(f"Building {codename}...", 0.1)
-                        t = threading.Thread(
-                            target=self._run_build,
-                            args=(codename,),
-                            daemon=True)
-                        t.start()
-                    elif action == "edit":
-                        editor = os.environ.get("EDITOR", "nano")
-                        conf   = str(DEVICES_DIR / codename / "device.conf")
-                        curses.endwin()
-                        subprocess.run([editor, conf])
-                        self._make_wins()
+                    if section == "ui":
+                        # Save selected UI back to device.conf
+                        ui_idx  = self.state.get(f"device_ui_idx:{codename}", 0)
+                        new_ui  = ui_options[ui_idx]
+                        conf_p  = DEVICES_DIR / codename / "device.conf"
+                        import re as _re
+                        txt     = conf_p.read_text()
+                        if _re.search(r'^DEVICE_UI=', txt, _re.MULTILINE):
+                            txt = _re.sub(r'^DEVICE_UI="[^"]*"',
+                                          f'DEVICE_UI="{new_ui}"', txt, flags=_re.MULTILINE)
+                        else:
+                            txt += f'\nDEVICE_UI="{new_ui}"\n'
+                        conf_p.write_text(txt)
+                        self.progress.done(f"UI set to {new_ui} for {codename}")
+                    else:
+                        idx    = self.state.get(f"device_action:{codename}", 0)
+                        action = actions[idx][0] if actions else None
+                        if action == "build":
+                            self.progress.update(f"Building {codename}...", 0.1)
+                            t = threading.Thread(
+                                target=self._run_build,
+                                args=(codename,),
+                                daemon=True)
+                            t.start()
+                        elif action == "edit":
+                            editor = os.environ.get("EDITOR", "nano")
+                            conf   = str(DEVICES_DIR / codename / "device.conf")
+                            curses.endwin()
+                            subprocess.run([editor, conf])
+                            self._make_wins()
 
         return True
 
@@ -672,19 +794,53 @@ class DevKit:
         if not build_sh.exists():
             self.progress.done("build.sh not found in Mobuntu/")
             return
-        cmd = ["sudo", "bash", str(build_sh), "-d", codename]
-        self.progress.update(f"Running build for {codename}...", 0.2)
+
+        conf_path = DEVICES_DIR / codename / "device.conf"
+        device_ui = "ubuntu-desktop-minimal"
+        if conf_path.exists():
+            for line in conf_path.read_text().splitlines():
+                if line.startswith("DEVICE_UI="):
+                    device_ui = line.split("=", 1)[1].strip().strip('"'  )
+                    break
+
+        # Enter lockout mode
+        self.state["build_log_device"] = codename
+        self.state["build_log_lines"]  = []
+        self.state["build_log_status"] = "running"
+        self.state["show_log"]         = True
+        self.state["lockout"]          = True
+
+        cmd = ["bash", str(build_sh), "-d", codename, "-u", device_ui]
+        self.progress.update(f"Building {codename}...", 0.1)
+
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=str(FORK_DIR))
-            output = (result.stdout + result.stderr).splitlines()
-            self.state["sync_output"] = output
-            if result.returncode == 0:
-                self.progress.done(f"Build complete: {codename}")
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, cwd=str(FORK_DIR), bufsize=1)
+
+            total_steps = 8
+            step = 0
+            for line in proc.stdout:
+                line = line.rstrip()
+                self.state["build_log_lines"].append(line)
+                if "====" in line:
+                    step = min(step + 1, total_steps)
+                    self.progress.update(line.strip("= ").strip(),
+                                         step / total_steps)
+
+            proc.wait()
+            if proc.returncode == 0:
+                self.state["build_log_status"] = "complete"
+                self.progress.done("Build complete")
             else:
-                self.progress.done(f"Build failed — check sync pane output")
+                self.state["build_log_status"] = "failed"
+                self.progress.done(f"Build failed — see log")
         except Exception as e:
+            self.state["build_log_status"] = "error"
+            self.state["build_log_lines"].append(str(e))
             self.progress.done(f"Error: {e}")
+        finally:
+            self.state["lockout"] = False
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -696,6 +852,8 @@ class DevKit:
 
         self.progress.update("Mobuntu DevKit ready", 0.0)
         self.progress.active = False
+
+
 
         running = True
         while running:
@@ -732,6 +890,12 @@ def main():
 
         download_file(url, dest, _StdoutProgress())
         return
+
+    # Warn if not root — build.sh requires it
+    if os.geteuid() != 0:
+        print("WARNING: Mobuntu DevKit should be run as root for build operations.")
+        print("Run: sudo python3 devkit.py")
+        time.sleep(2)
 
     curses.wrapper(lambda s: DevKit(s).run())
 
