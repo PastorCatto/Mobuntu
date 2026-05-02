@@ -19,6 +19,14 @@ else
     apt-get install -y linux-image-6.18-sdm845 linux-headers-6.18-sdm845
 fi
 
+# ── Firmware symlinks: kernel fastrpc expects flat qcom/sdm845/ path ─────────
+echo "Symlink DSP firmware to flat path"
+FW_SRC="/usr/lib/firmware/qcom/sdm845/Xiaomi/beryllium"
+FW_DST="/usr/lib/firmware/qcom/sdm845"
+for f in adsp.mbn cdsp.mbn adspr.jsn adspua.jsn cdspr.jsn wlanmdsp.mbn; do
+    [ -f "$FW_SRC/$f" ] && ln -sf "$FW_SRC/$f" "$FW_DST/$f" && echo "  linked $f"
+done
+
 # ── Audio: Mobian UCM2 maps ───────────────────────────────────────────────────
 # Mobian repo is configured via overlays/etc/apt/sources.list.d/extrepo_mobian.sources
 echo "Fix alsa-ucm-conf"
@@ -29,18 +37,36 @@ echo "Mask for working speakers"
 systemctl mask alsa-state alsa-restore
 systemctl set-default graphical.target
 
+# ── UI installation ──────────────────────────────────────────────────────────
+echo "Installing UI: ${DEVICE_UI:-ubuntu-desktop-minimal}"
+case "${DEVICE_UI:-ubuntu-desktop-minimal}" in
+    phosh)
+        apt-get install -y phosh phoc
+        systemctl enable phosh
+        ;;
+    plasma-mobile)
+        apt-get install -y plasma-mobile
+        systemctl enable sddm
+        ;;
+    ubuntu-desktop-minimal|*)
+        apt-get install -y ubuntu-desktop-minimal
+        ;;
+esac
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 echo "Clean packages"
 apt-get -y autoremove --purge
 
-# ── GNOME extensions ──────────────────────────────────────────────────────────
-echo "Disable GNOME extension version validation"
-gsettings set org.gnome.shell disable-extension-version-validation true
+# ── GNOME extensions (ubuntu-desktop-minimal only) ────────────────────────────
+if [ "${DEVICE_UI:-ubuntu-desktop-minimal}" = "ubuntu-desktop-minimal" ]; then
+    echo "Disable GNOME extension version validation"
+    gsettings set org.gnome.shell disable-extension-version-validation true
 
-echo "Enable shell extensions"
-gnome-extensions enable aurora-shell@luminusos.github.io
-gnome-extensions enable touchup@mityax
-gnome-extensions enable user-theme@gnome-shell-extensions.gcampax.github.com
+    echo "Enable shell extensions"
+    gnome-extensions enable aurora-shell@luminusos.github.io
+    gnome-extensions enable touchup@mityax
+    gnome-extensions enable user-theme@gnome-shell-extensions.gcampax.github.com
+fi
 
 # ── Services ──────────────────────────────────────────────────────────────────
 echo "Enable rootfs resize service"

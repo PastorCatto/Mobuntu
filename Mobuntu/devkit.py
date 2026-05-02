@@ -780,7 +780,16 @@ class DevKit:
         self.state["build_log_status"] = "running"
         self.state["show_log"]         = True
 
-        cmd = ["bash", str(build_sh), "-d", codename]
+        # Read DEVICE_UI from device.conf to pass directly — no interactive prompt
+        conf_path = DEVICES_DIR / codename / "device.conf"
+        device_ui = "ubuntu-desktop-minimal"
+        if conf_path.exists():
+            for line in conf_path.read_text().splitlines():
+                if line.startswith("DEVICE_UI="):
+                    device_ui = line.split("=", 1)[1].strip().strip('"')
+                    break
+
+        cmd = ["bash", str(build_sh), "-d", codename, "-u", device_ui]
         self.progress.update(f"Building {codename}...", 0.1)
 
         try:

@@ -33,11 +33,13 @@ usage() {
 DEVICE=""
 SUITE_OVERRIDE=""
 IMAGE_ONLY=0
+UI_OVERRIDE=""
 
-while getopts "d:s:ih" opt; do
+while getopts "d:s:u:ih" opt; do
     case $opt in
         d) DEVICE="$OPTARG" ;;
         s) SUITE_OVERRIDE="$OPTARG" ;;
+        u) UI_OVERRIDE="$OPTARG" ;;
         i) IMAGE_ONLY=1 ;;
         h) usage ;;
         *) usage ;;
@@ -76,10 +78,37 @@ if [ "$SUITE" = "resolute" ]; then
 fi
 
 # ── Validate required device vars ──────────────────────────────────────────
-: "${FW_ARCHIVE_URL:?device.conf missing FW_ARCHIVE_URL}"
-: "${KERNEL_IMAGE_URL:?device.conf missing KERNEL_IMAGE_URL}"
-: "${KERNEL_HEADERS_URL:?device.conf missing KERNEL_HEADERS_URL}"
 : "${KERNEL_VERSION:?device.conf missing KERNEL_VERSION}"
+
+# ── UI selection ───────────────────────────────────────────────────────────
+CURRENT_UI="${DEVICE_UI:-ubuntu-desktop-minimal}"
+
+if [ -n "$UI_OVERRIDE" ]; then
+    # Passed via -u flag (e.g. from devkit) — no prompt
+    DEVICE_UI="$UI_OVERRIDE"
+else
+    # Interactive prompt for terminal use — times out after 5s
+    echo ""
+    echo "Select UI (default: $CURRENT_UI, auto-selecting in 5s):"
+    echo "  1) ubuntu-desktop-minimal"
+    echo "  2) phosh"
+    echo "  3) plasma-mobile"
+    echo ""
+    if read -r -t 5 -p "Choice [1-3]: " ui_choice; then
+        case "$ui_choice" in
+            1) DEVICE_UI="ubuntu-desktop-minimal" ;;
+            2) DEVICE_UI="phosh" ;;
+            3) DEVICE_UI="plasma-mobile" ;;
+            *) echo "Invalid — using default"; DEVICE_UI="$CURRENT_UI" ;;
+        esac
+    else
+        echo ""
+        echo "No input — defaulting to $CURRENT_UI"
+        DEVICE_UI="$CURRENT_UI"
+    fi
+fi
+echo "  UI: $DEVICE_UI"
+echo ""
 
 # ── Output filenames ────────────────────────────────────────────────────────
 IMG_FILE="mobuntu-${DEVICE}-$(date +%Y%m%d).img"
@@ -106,6 +135,7 @@ DEBOS_VARS=(
     -t "kernel_image:${KERNEL_IMAGE_URL}"
     -t "kernel_headers:${KERNEL_HEADERS_URL}"
     -t "kernel_version:${KERNEL_VERSION}"
+    -t "device_ui:${DEVICE_UI}"
 )
 
 cd "$SCRIPT_DIR"
@@ -123,3 +153,16 @@ debos $DEBOS_ARGS "${DEBOS_VARS[@]}" image.yaml
 echo ""
 echo "Build complete: $IMG_FILE"
 echo "Flashable rootfs: root-$IMG_FILE"
+
+# ── Extract boot.img from rootfs ────────────────────────────────────────────
+BOOT_IMG="boot-${IMG_FILE}"
+ROOT_IMG="root-${IMG_FILE}"
+MOUNT_TMP="$(mktemp -d)"
+
+echo "── Extracting boot.img ──"
+if [ -f "$ROOT_IMG" ]; then
+    mount -o loop,ro "$ROOT_IMG" "$MOUNT_TMP" &&     cp "$MOUNT_TMP/boot/boot.img" "$BOOT_IMG" &&     umount "$MOUNT_TMP" &&     echo "Boot image: $BOOT_IMG" ||     { umount "$MOUNT_TMP" 2>/dev/null; echo "WARN: boot.img extraction failed"; }
+else
+    echo "WARN: $ROOT_IMG not found — skipping boot.img extraction"
+fi
+rmdir "$MOUNT_TMP" 2>/dev/null || true
