@@ -10,7 +10,6 @@ actions:
                parted, linux-base, util-linux, rfkill, file, findutils, ntpsec, bc, net-tools,
                network-manager, modemmanager, bluez, gnupg2, blueman, binutils, rsync,
                qrtr-tools, rmtfs, protection-domain-mapper, qcom-phone-utils, tqftpserv,
-               hexagonrpcd, abootimg, linux-firmware-qualcomm-graphics,
-               linux-firmware-qualcomm-misc, linux-firmware-qualcomm-wireless, extrepo,
+               hexagonrpcd, abootimg, extrepo,
                zstd, zarchive-tools, pipewire*, alsa*, gnome-calls, chatty,
                gnome-shell-extension-manager]

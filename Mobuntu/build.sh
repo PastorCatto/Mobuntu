@@ -61,22 +61,6 @@ source "$DEVICE_CONF"
 
 SUITE="${SUITE_OVERRIDE:-${DEVICE_SUITE:-plucky}}"
 
-# ── Suite warning gate ──────────────────────────────────────────────────────
-if [ "$SUITE" = "resolute" ]; then
-    echo ""
-    echo "┌─────────────────────────────────────────────────────────────────┐"
-    echo "│  WARNING: Ubuntu 26.04 'resolute' has known SDM845 regressions │"
-    echo "│  WiFi, Bluetooth, and audio are affected on most devices.       │"
-    echo "│  Recommended suite: plucky (25.04)                              │"
-    echo "└─────────────────────────────────────────────────────────────────┘"
-    echo ""
-    read -rp "Type YES to confirm resolute: " confirm1
-    [ "$confirm1" = "YES" ] || { echo "Aborted."; exit 1; }
-    read -rp "Type RESOLUTE to confirm again: " confirm2
-    [ "$confirm2" = "RESOLUTE" ] || { echo "Aborted."; exit 1; }
-    echo ""
-fi
-
 # ── Validate required device vars ──────────────────────────────────────────
 : "${KERNEL_VERSION:?device.conf missing KERNEL_VERSION}"
 
