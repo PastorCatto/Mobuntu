@@ -27,6 +27,10 @@ for f in adsp.mbn cdsp.mbn adspr.jsn adspua.jsn cdspr.jsn wlanmdsp.mbn; do
     [ -f "$FW_SRC/$f" ] && ln -sf "$FW_SRC/$f" "$FW_DST/$f" && echo "  linked $f"
 done
 
+# ── Mobian-only firmware packages ────────────────────────────────────────────
+echo "Install Mobian qualcomm firmware packages"
+apt-get install -y     linux-firmware-qualcomm-graphics     linux-firmware-qualcomm-misc     linux-firmware-qualcomm-wireless
+
 # ── Audio: Mobian UCM2 maps ───────────────────────────────────────────────────
 # Mobian repo is configured via overlays/etc/apt/sources.list.d/extrepo_mobian.sources
 echo "Fix alsa-ucm-conf"

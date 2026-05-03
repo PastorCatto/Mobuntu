@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
 """
-mobuntu-devkit  —  Grand Developer Kit Reset
-Regedit-style split-pane TUI for managing Mobuntu Orange builds.
+Mobuntu Devkit — auto-runner.
 
-Layout:
-  ┌─ Nav ──────────┐ ┌─ Content ──────────────────────────────┐
-  │  tree / menu   │ │  details, actions, output              │
-  └────────────────┘ └────────────────────────────────────────┘
-  ┌─ Status / Progress bar ────────────────────────────────────┐
-  └────────────────────────────────────────────────────────────┘
+Detects which Mobuntu variant lives in the current directory tree (or repo
+root, walking up) and dispatches to its build pipeline. Provides a curses
+TUI with a regedit-style split-pane layout: variant tree on the left,
+status / log / actions on the right.
 
-Keys: ↑↓ navigate  Enter select  Tab switch pane  q quit  r refresh
+Variants are auto-detected by looking for a ``build.env`` and ``build.sh``
+inside known folder names:
+
+    Mobuntu/         — SDM845 main branch
+    Mobuntu-PDK/     — Ubuntu PDK adaptation
+    Mobuntu-L4T/     — Switchroot L4T target
+
+Run from the repo root (or any ancestor):
+
+    python3 devkit.py
+
+ASCII-only — no emoji.
 """
+from __future__ import annotations
 
 import curses
 import os
@@ -19,886 +28,518 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
-
-# ── Optional requests for download progress ───────────────────────────────────
-try:
-    import requests as _requests
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
-SCRIPT_DIR  = Path(__file__).parent.resolve()
-FORK_DIR    = SCRIPT_DIR / "Mobuntu"
-DEVICES_DIR = FORK_DIR / "devices"
-SYNC_SCRIPT   = SCRIPT_DIR / "sync.py"
-BUILD_LOG     = Path.home() / ".mobuntu-build.log"
-BUILD_SESSION = "mobuntu-build"
-
-# ── Colours (pair indices) ────────────────────────────────────────────────────
-C_NORMAL    = 1
-C_SELECTED  = 2
-C_HEADER    = 3
-C_BORDER    = 4
-C_STATUS    = 5
-C_PROGRESS  = 6
-C_KEY       = 7
-C_WARN      = 8
-C_OK        = 9
-C_DIM       = 10
-
-NAV_WIDTH   = 26   # left pane width including border
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Nav tree
-# ══════════════════════════════════════════════════════════════════════════════
-
-class NavNode:
-    def __init__(self, label, key, children=None, parent=None):
-        self.label    = label
-        self.key      = key          # unique id used by content pane
-        self.children = children or []
-        self.parent   = parent
-        self.expanded = True
-        for c in self.children:
-            c.parent = self
-
-    def flat(self, depth=0):
-        yield (depth, self)
-        if self.expanded:
-            for c in self.children:
-                yield from c.flat(depth + 1)
-
-
-def build_tree() -> NavNode:
-    """Build nav tree from filesystem state."""
-    device_nodes = []
-    if DEVICES_DIR.exists():
-        for d in sorted(DEVICES_DIR.iterdir()):
-            if d.is_dir() and (d / "device.conf").exists():
-                device_nodes.append(NavNode(d.name, f"device:{d.name}"))
-
-    root = NavNode("ROOT", "root", children=[
-        NavNode("⟳  Sync",    "sync"),
-        NavNode("⊞  Devices", "devices", children=device_nodes),
-        NavNode("⚙  Build",   "build"),
-        NavNode("?  About",   "about"),
-    ])
-    return root
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Content renderers
-# ══════════════════════════════════════════════════════════════════════════════
-
-def render_sync(win, state):
-    h, w = win.getmaxyx()
-    ln = 1
-
-    def put(y, x, text, attr=0):
-        try:
-            win.addstr(y, x, text[:w - x - 1], attr)
-        except curses.error:
-            pass
-
-    put(ln, 2, "Upstream Sync", curses.color_pair(C_HEADER) | curses.A_BOLD)
-    ln += 1
-    put(ln, 2, "─" * (w - 4), curses.color_pair(C_BORDER))
-    ln += 2
-
-    put(ln, 2, f"Upstream : ", curses.color_pair(C_DIM))
-    put(ln, 13, "https://github.com/arkadin91/mobuntu-recipes",
-        curses.color_pair(C_NORMAL))
-    ln += 1
-    put(ln, 2, f"Fork dir : ", curses.color_pair(C_DIM))
-    put(ln, 13, str(FORK_DIR), curses.color_pair(C_NORMAL))
-    ln += 2
-
-    # State from .devkit-sync-state.json
-    import json
-    state_file = FORK_DIR / ".devkit-sync-state.json"
-    if state_file.exists():
-        s = json.loads(state_file.read_text())
-        put(ln, 2, "Last sync  : ", curses.color_pair(C_DIM))
-        put(ln, 15, s.get("last_sync", "never")[:19], curses.color_pair(C_OK))
-        ln += 1
-        put(ln, 2, "Upstream   : ", curses.color_pair(C_DIM))
-        sha = s.get("upstream_sha", "unknown")
-        put(ln, 15, sha[:12] if sha else "unknown", curses.color_pair(C_NORMAL))
-    else:
-        put(ln, 2, "Never synced", curses.color_pair(C_WARN))
-    ln += 2
-
-    put(ln, 2, "Actions:", curses.color_pair(C_HEADER))
-    ln += 1
-    actions = [
-        ("[S]", "Sync now          (pull upstream + update device confs)"),
-        ("[D]", "Dry run           (show changes without writing)"),
-        ("[E]", "Extract only      (show upstream vars without syncing)"),
-    ]
-    for key, desc in actions:
-        put(ln, 4, key, curses.color_pair(C_KEY) | curses.A_BOLD)
-        put(ln, 8, desc, curses.color_pair(C_NORMAL))
-        ln += 1
-
-    # Output from last sync op
-    if state.get("sync_output"):
-        ln += 1
-        put(ln, 2, "Last output:", curses.color_pair(C_DIM))
-        ln += 1
-        for line in state["sync_output"][-min(10, h - ln - 2):]:
-            put(ln, 4, line, curses.color_pair(C_NORMAL))
-            ln += 1
-            if ln >= h - 2:
-                break
-
-
-def render_device(win, codename, state):
-    h, w = win.getmaxyx()
-    ln = 1
-
-    def put(y, x, text, attr=0):
-        try:
-            win.addstr(y, x, text[:w - x - 1], attr)
-        except curses.error:
-            pass
-
-    conf_path = DEVICES_DIR / codename / "device.conf"
-    conf = {}
-    if conf_path.exists():
-        for line in conf_path.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                conf[k.strip()] = v.strip().strip('"')
-
-    put(ln, 2, f"Device: {codename}", curses.color_pair(C_HEADER) | curses.A_BOLD)
-    ln += 1
-    put(ln, 2, "─" * (w - 4), curses.color_pair(C_BORDER))
-    ln += 2
-
-    fields = [
-        ("Model",    conf.get("DEVICE_MODEL", "?")),
-        ("Brand",    conf.get("DEVICE_BRAND", "?")),
-        ("SoC",      conf.get("DEVICE_SOC", "?")),
-        ("Suite",    conf.get("DEVICE_SUITE", "?")),
-        ("Kernel",   conf.get("KERNEL_VERSION", "?")),
-        ("Displays", conf.get("DEVICE_DISPLAYS", "default")),
-        ("Packages", conf.get("DEVICE_PACKAGES", "")),
-        ("Services", conf.get("DEVICE_SERVICES", "")),
-        ("Masked",   conf.get("DEVICE_MASKED_SERVICES", "")),
-    ]
-
-    for label, val in fields:
-        if ln >= h - 4:
-            break
-        put(ln, 2, f"{label:<12}", curses.color_pair(C_DIM))
-        color = C_WARN if val == "?" else C_NORMAL
-        put(ln, 14, val, curses.color_pair(color))
-        ln += 1
-
-    # Display variants
-    displays = conf.get("DEVICE_DISPLAYS", "").split()
-    if len(displays) > 1:
-        ln += 1
-        put(ln, 2, "Display DTBs:", curses.color_pair(C_HEADER))
-        ln += 1
-        for d in displays:
-            dtb_key = f"DEVICE_DTB_{d.upper()}"
-            dtb = conf.get(dtb_key, f"sdm845-{codename}-{d}.dtb")
-            default = " ← default" if d == conf.get("DEVICE_DEFAULT_DISPLAY") else ""
-            put(ln, 4, f"{d:<10} {dtb}{default}", curses.color_pair(C_NORMAL))
-            ln += 1
-
-    # ── UI picker ────────────────────────────────────────────────────────────
-    ln += 1
-    put(ln, 2, "UI:", curses.color_pair(C_HEADER))
-    ln += 1
-    ui_options  = ["ubuntu-desktop-minimal", "phosh", "plasma-mobile"]
-    current_ui  = conf.get("DEVICE_UI", "ubuntu-desktop-minimal")
-    ui_section  = state.get(f"device_section:{codename}", "ui") == "ui"
-    ui_idx      = state.get(f"device_ui_idx:{codename}",
-                            ui_options.index(current_ui) if current_ui in ui_options else 0)
-    state[f"device_ui_options:{codename}"] = ui_options
-
-    for i, ui in enumerate(ui_options):
-        sel  = i == ui_idx and state.get("content_focus_active") and ui_section
-        mark = "(x)" if sel else "( )"
-        attr = (curses.color_pair(C_SELECTED) | curses.A_BOLD) if sel                else curses.color_pair(C_NORMAL)
-        tag  = " <- current" if ui == current_ui else ""
-        put(ln, 4, f"{mark} {ui}{tag}", attr)
-        ln += 1
-
-    ln += 1
-    put(ln, 2, "Actions:", curses.color_pair(C_HEADER))
-    ln += 1
-
-    actions = [
-        ("build", "Build image for this device"),
-        ("edit",  "Edit device.conf"),
-    ]
-    action_idx = state.get(f"device_action:{codename}", 0)
-    state[f"device_actions:{codename}"] = actions
-
-    for i, (key_, label) in enumerate(actions):
-        selected = i == action_idx and state.get("content_focus_active")
-        marker = "(x)" if selected else "( )"
-        attr   = (curses.color_pair(C_SELECTED) | curses.A_BOLD) if selected                  else curses.color_pair(C_NORMAL)
-        put(ln, 4, f"{marker} {label}", attr)
-        ln += 1
-
-
-def render_devices_overview(win, state):
-    h, w = win.getmaxyx()
-    ln = 1
-
-    def put(y, x, text, attr=0):
-        try:
-            win.addstr(y, x, text[:w - x - 1], attr)
-        except curses.error:
-            pass
-
-    put(ln, 2, "Devices", curses.color_pair(C_HEADER) | curses.A_BOLD)
-    ln += 1
-    put(ln, 2, "─" * (w - 4), curses.color_pair(C_BORDER))
-    ln += 2
-
-    if not DEVICES_DIR.exists():
-        put(ln, 2, "No devices/ directory found.", curses.color_pair(C_WARN))
-        return
-
-    for d in sorted(DEVICES_DIR.iterdir()):
-        if not d.is_dir() or not (d / "device.conf").exists():
-            continue
-        conf = {}
-        for line in (d / "device.conf").read_text().splitlines():
-            if line.strip() and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                conf[k.strip()] = v.strip().strip('"')
-
-        model  = conf.get("DEVICE_MODEL", "?")
-        suite  = conf.get("DEVICE_SUITE", "?")
-        kernel = conf.get("KERNEL_VERSION", "?")
-        put(ln, 2, f"  {d.name:<14}", curses.color_pair(C_NORMAL) | curses.A_BOLD)
-        put(ln, 18, f"{model:<16} {suite:<10} k:{kernel}",
-            curses.color_pair(C_NORMAL))
-        ln += 1
-        if ln >= h - 2:
-            break
-
-
-def render_build(win, state):
-    h, w = win.getmaxyx()
-    ln = 1
-
-    def put(y, x, text, attr=0):
-        try:
-            win.addstr(y, x, text[:w - x - 1], attr)
-        except curses.error:
-            pass
-
-    put(ln, 2, "Build", curses.color_pair(C_HEADER) | curses.A_BOLD)
-    ln += 1
-    put(ln, 2, "─" * (w - 4), curses.color_pair(C_BORDER))
-    ln += 2
-    put(ln, 2, "Select a device from the nav tree to build.",
-        curses.color_pair(C_DIM))
-    ln += 2
-    put(ln, 2, "Or use build.sh directly:", curses.color_pair(C_NORMAL))
-    ln += 1
-    put(ln, 4, "sudo bash Mobuntu/build.sh -d <device> [-s <suite>]",
-        curses.color_pair(C_KEY))
-    ln += 2
-    put(ln, 2, "Flags:", curses.color_pair(C_HEADER))
-    ln += 1
-    flags = [
-        ("-d <device>",  "Device codename  (beryllium, fajita, enchilada)"),
-        ("-s <suite>",   "Suite override   (plucky, resolute)"),
-        ("-i",           "Image only       (skip rootfs, reuse tarball)"),
-        ("-h",           "Help"),
-    ]
-    for flag, desc in flags:
-        put(ln, 4, f"{flag:<16}", curses.color_pair(C_KEY) | curses.A_BOLD)
-        put(ln, 22, desc, curses.color_pair(C_NORMAL))
-        ln += 1
-
-
-def render_about(win, state):
-    h, w = win.getmaxyx()
-    ln = 2
-
-    def put(y, x, text, attr=0):
-        try:
-            win.addstr(y, x, text[:w - x - 1], attr)
-        except curses.error:
-            pass
-
-    lines = [
-        ("Mobuntu Orange — Grand Developer Kit Reset", C_HEADER, curses.A_BOLD),
-        ("", C_NORMAL, 0),
-        ("Built on top of arkadin91/mobuntu-recipes", C_NORMAL, 0),
-        ("Multi-device wrapper: beryllium, fajita, enchilada", C_NORMAL, 0),
-        ("", C_NORMAL, 0),
-        ("Repo   : github.com/PastorCatto/Mobuntu", C_DIM, 0),
-        ("Upstream: github.com/arkadin91/mobuntu-recipes", C_DIM, 0),
-        ("", C_NORMAL, 0),
-        ("Keys", C_HEADER, curses.A_BOLD),
-        ("  ↑ ↓      Navigate", C_NORMAL, 0),
-        ("  Enter    Select / expand", C_NORMAL, 0),
-        ("  Tab      Switch pane focus", C_NORMAL, 0),
-        ("  q        Quit", C_NORMAL, 0),
-        ("  r        Refresh tree", C_NORMAL, 0),
-    ]
-    for text, color, attr in lines:
-        put(ln, 2, text, curses.color_pair(color) | attr)
-        ln += 1
-        if ln >= h - 2:
-            break
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Log view
-# ══════════════════════════════════════════════════════════════════════════════
-
-def render_log(win, state):
-    """Full-pane live build log view."""
-    h, w = win.getmaxyx()
-
-    def put(y, x, text, attr=0):
-        try:
-            win.addstr(y, x, text[:w - x - 1], attr)
-        except curses.error:
-            pass
-
-    codename = state.get("build_log_device", "")
-    status   = state.get("build_log_status", "running")
-
-    title_attr = curses.color_pair(C_HEADER) | curses.A_BOLD
-    put(0, 2, f" Build Log: {codename} [{status}] ", title_attr)
-    put(1, 2, "─" * (w - 4), curses.color_pair(C_BORDER))
-
-    lines = state.get("build_log_lines", [])
-    # Show last (h - 4) lines so newest is always visible
-    visible = lines[-(h - 4):] if len(lines) > h - 4 else lines
-    for i, line in enumerate(visible):
-        y = i + 2
-        if y >= h - 2:
-            break
-        attr = curses.color_pair(C_WARN) if "error" in line.lower() or "fail" in line.lower()                else curses.color_pair(C_OK) if "done" in line.lower() or "complete" in line.lower()                else curses.color_pair(C_NORMAL)
-        put(y, 2, line, attr)
-
-    put(h - 1, 2, " [Q] Quit log view ", curses.color_pair(C_KEY))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Progress bar
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ProgressBar:
-    def __init__(self):
-        self.message  = "Ready"
-        self.value    = 0.0   # 0.0 – 1.0
-        self.active   = False
-        self._lock    = threading.Lock()
-
-    def update(self, message, value=None):
-        with self._lock:
-            self.message = message
-            if value is not None:
-                self.value  = max(0.0, min(1.0, value))
-            self.active = True
-
-    def done(self, message="Done"):
-        with self._lock:
-            self.message = message
-            self.value   = 1.0
-            self.active  = False
-
-    def render(self, win, y, x, width):
-        with self._lock:
-            msg   = self.message
-            val   = self.value
-
-        # Layout: [bar...bar] pct% message
-        # bar = fixed 30% of width, label gets the rest
-        bar_w   = max(10, width // 3)
-        label   = f" {int(val * 100):3d}% {msg}"
-        lbl_w   = width - bar_w - 4   # 4 = " [" + "] "
-        filled  = int(bar_w * val)
-        empty   = bar_w - filled
-        bar     = "█" * filled + "░" * empty
-
-        attr_bar = curses.color_pair(C_PROGRESS) | curses.A_BOLD
-        attr_msg = curses.color_pair(C_STATUS)
-
-        try:
-            win.addstr(y, x, f"[{bar}]", attr_bar)
-            win.addstr(y, x + bar_w + 2, label[:lbl_w], attr_msg)
-        except curses.error:
-            pass
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Download helper
-# ══════════════════════════════════════════════════════════════════════════════
-
-def download_file(url: str, dest: Path, progress: ProgressBar):
-    """Stream download with live progress updates."""
-    if not HAS_REQUESTS:
-        progress.done("requests not installed — use pip install requests")
-        return False
-
-    try:
-        progress.update(f"Connecting...", 0.0)
-        r = _requests.get(url, stream=True, timeout=30)
-        r.raise_for_status()
-
-        total = int(r.headers.get("content-length", 0))
-        downloaded = 0
-        dest.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=65536):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded / total
-                        mb  = downloaded / 1_048_576
-                        progress.update(
-                            f"Downloading {dest.name} ({mb:.1f} MB)", pct)
-                    else:
-                        mb = downloaded / 1_048_576
-                        progress.update(f"Downloading {dest.name} ({mb:.1f} MB)")
-
-        progress.done(f"Downloaded {dest.name}")
-        return True
-
-    except Exception as e:
-        progress.done(f"Error: {e}")
-        return False
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Sync runner
-# ══════════════════════════════════════════════════════════════════════════════
-
-def run_sync(dry_run: bool, progress: ProgressBar, state: dict):
-    progress.update("Running sync...", 0.1)
-    cmd = [sys.executable, str(SYNC_SCRIPT), "--fork-dir", str(FORK_DIR)]
-    if dry_run:
-        cmd.append("--dry-run")
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            cwd=str(SCRIPT_DIR)
-        )
-        output = (result.stdout + result.stderr).splitlines()
-        state["sync_output"] = output
-        if result.returncode == 0:
-            progress.done("Sync complete")
-        else:
-            progress.done("Sync failed — check output")
-    except Exception as e:
-        state["sync_output"] = [str(e)]
-        progress.done(f"Error: {e}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Main TUI
-# ══════════════════════════════════════════════════════════════════════════════
-
-class DevKit:
-    def __init__(self, stdscr):
-        self.scr      = stdscr
-        self.progress = ProgressBar()
-        self.state    = {}          # shared state between panes
-        self.focus    = "nav"       # "nav" | "content"
-        self.tree     = build_tree()
-        self._flat: list[tuple[int, NavNode]] = []
-        self.nav_idx  = 0
-        self._rebuild_flat()
-
-    # ── Init ──────────────────────────────────────────────────────────────────
-
-    def _init_colors(self):
-        curses.start_color()
-        curses.use_default_colors()
-        bg = -1
-        curses.init_pair(C_NORMAL,   curses.COLOR_WHITE,   bg)
-        curses.init_pair(C_SELECTED, curses.COLOR_BLACK,   curses.COLOR_CYAN)
-        curses.init_pair(C_HEADER,   curses.COLOR_CYAN,    bg)
-        curses.init_pair(C_BORDER,   curses.COLOR_BLUE,    bg)
-        curses.init_pair(C_STATUS,   curses.COLOR_WHITE,   bg)
-        curses.init_pair(C_PROGRESS, curses.COLOR_GREEN,   bg)
-        curses.init_pair(C_KEY,      curses.COLOR_YELLOW,  bg)
-        curses.init_pair(C_WARN,     curses.COLOR_YELLOW,  bg)
-        curses.init_pair(C_OK,       curses.COLOR_GREEN,   bg)
-        curses.init_pair(C_DIM,      curses.COLOR_WHITE,   bg)
-
-    # ── Tree helpers ──────────────────────────────────────────────────────────
-
-    def _rebuild_flat(self):
-        self._flat = []
-        for child in self.tree.children:
-            self._flat.extend(child.flat(0))
-        self.nav_idx = max(0, min(self.nav_idx, len(self._flat) - 1))
+from typing import Deque, List, Optional
+
+# -----------------------------------------------------------------------------
+# Variant discovery
+# -----------------------------------------------------------------------------
+
+KNOWN_VARIANTS = ("Mobuntu", "Mobuntu-PDK", "Mobuntu-L4T", "Mobuntu-PS4")
+
+
+@dataclass
+class Variant:
+    name: str
+    path: Path
+    build_env: Path
+    build_sh: Path
+    has_devkit_meta: bool = False
+    config: dict = field(default_factory=dict)
 
     @property
-    def selected_node(self) -> NavNode:
-        if not self._flat:
-            return self.tree
-        return self._flat[self.nav_idx][1]
+    def label(self) -> str:
+        suite = self.config.get("UBUNTU_SUITE", "?")
+        release = self.config.get("RELEASE_TAG", "?")
+        return f"{self.name:<14}  suite={suite:<6}  release={release}"
 
-    # ── Drawing ───────────────────────────────────────────────────────────────
 
-    def _draw_border(self, win, title="", focus=False):
-        h, w = win.getmaxyx()
-        attr  = curses.color_pair(C_HEADER if focus else C_BORDER)
-        try:
-            win.border()
-            if title:
-                win.addstr(0, 2, f" {title} ", attr | curses.A_BOLD)
-        except curses.error:
-            pass
+def find_repo_root(start: Path) -> Path:
+    """Walk up looking for a .git or any KNOWN_VARIANTS sibling."""
+    cur = start.resolve()
+    for parent in [cur] + list(cur.parents):
+        if (parent / ".git").exists():
+            return parent
+        for v in KNOWN_VARIANTS:
+            if (parent / v).is_dir():
+                return parent
+    return cur
 
-    def _draw_nav(self, win):
-        h, w  = win.getmaxyx()
-        focus = self.focus == "nav"
-        self._draw_border(win, "Navigation", focus)
 
-        if self.state.get("lockout"):
-            try:
-                win.addstr(h // 2 - 1, 2, "!! LOCKOUT MODE !!",
-                           curses.color_pair(C_WARN) | curses.A_BOLD)
-                win.addstr(h // 2,     2, "Build in progress",
-                           curses.color_pair(C_DIM))
-            except curses.error:
-                pass
-            return
+_VAR_DEFAULT_RE = __import__("re").compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}")
 
-        visible_start = max(0, self.nav_idx - (h - 3))
-        for row, (depth, node) in enumerate(self._flat):
-            y = row - visible_start + 1
-            if y < 1 or y >= h - 1:
-                continue
 
-            indent   = "  " * depth
-            is_sel   = row == self.nav_idx
-            has_kids = bool(node.children)
-            marker   = ("▾ " if node.expanded else "▸ ") if has_kids else "  "
-            label    = f"{indent}{marker}{node.label}"
+def parse_build_env(path: Path) -> dict:
+    """Best-effort parse of shell var assignments from a build.env.
 
-            attr = curses.color_pair(C_SELECTED) if is_sel else \
-                   curses.color_pair(C_NORMAL)
-            if is_sel and focus:
-                attr |= curses.A_BOLD
+    Handles patterns like:
+        FOO="bar"
+        FOO="${FOO:-bar}"        # inline comment
+        export FOO=bar
+    """
+    out: dict = {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if not key.isidentifier():
+            continue
 
-            try:
-                win.addstr(y, 1, label[:w - 2].ljust(w - 2), attr)
-            except curses.error:
-                pass
-
-    def _draw_content(self, win):
-        focus = self.focus == "content"
-        node  = self.selected_node
-        win.erase()
-
-        # Override with log view during/after build
-        if self.state.get("show_log"):
-            render_log(win, self.state)
-            return
-
-        self._draw_border(win, node.label.strip(), focus)
-
-        key = node.key
-        if key == "sync":
-            render_sync(win, self.state)
-        elif key == "devices":
-            render_devices_overview(win, self.state)
-        elif key.startswith("device:"):
-            render_device(win, key.split(":", 1)[1], self.state)
-        elif key == "build":
-            render_build(win, self.state)
-        elif key == "about":
-            render_about(win, self.state)
-
-    def _draw_status(self, win):
-        h, w = win.getmaxyx()
-        win.erase()
-        try:
-            win.border()
-            self.progress.render(win, 1, 1, w - 2)
-            if self.state.get("lockout"):
-                hint = " !! WARNING: DevKit is in LOCKOUT mode — Build in progress, all input disabled !! "
-                win.addstr(0, max(2, w - len(hint) - 2), hint,
-                           curses.color_pair(C_WARN) | curses.A_BOLD)
-            else:
-                hint = " Tab:switch pane  ↑↓:navigate  Enter:select  q:quit  r:refresh "
-                win.addstr(0, max(2, w - len(hint) - 2), hint,
-                           curses.color_pair(C_DIM))
-        except curses.error:
-            pass
-
-    def _make_wins(self):
-        sh, sw        = self.scr.getmaxyx()
-        status_h      = 3
-        main_h        = sh - status_h
-        content_w     = max(1, sw - NAV_WIDTH)
-        self._sh, self._sw = sh, sw
-        self._nav_win     = curses.newwin(main_h,   NAV_WIDTH, 0,      0)
-        self._content_win = curses.newwin(main_h,   content_w, 0,      NAV_WIDTH)
-        self._status_win  = curses.newwin(status_h, sw,        main_h, 0)
-
-    def draw(self):
-        sh, sw = self.scr.getmaxyx()
-        if not hasattr(self, "_sh") or (sh, sw) != (self._sh, self._sw):
-            self._make_wins()
-
-        self._draw_nav(self._nav_win)
-        self._draw_content(self._content_win)
-        self._draw_status(self._status_win)
-
-        self._nav_win.noutrefresh()
-        self._content_win.noutrefresh()
-        self._status_win.noutrefresh()
-        curses.doupdate()
-
-    # ── Input ─────────────────────────────────────────────────────────────────
-
-    def handle_key(self, key):
-        node = self.selected_node
-
-        # Block all input during lockout
-        if self.state.get("lockout"):
-            return True
-
-        if key in (ord('q'), ord('Q')):
-            if self.state.get("show_log") and                self.state.get("build_log_status") != "running":
-                self.state["show_log"] = False
-                return True
-            return False
-
-        elif key == ord('\t'):
-            self.focus = "content" if self.focus == "nav" else "nav"
-
-        elif key == ord('r'):
-            self.tree = build_tree()
-            self._rebuild_flat()
-
-        elif self.focus == "nav":
-            if key == curses.KEY_UP:
-                self.nav_idx = max(0, self.nav_idx - 1)
-            elif key == curses.KEY_DOWN:
-                self.nav_idx = min(len(self._flat) - 1, self.nav_idx + 1)
-            elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
-                if node.children:
-                    node.expanded = not node.expanded
-                    self._rebuild_flat()
-                else:
-                    self.focus = "content"
-
-        elif self.focus == "content":
-            key_chr = chr(key) if 32 <= key < 127 else ""
-            self.state["content_focus_active"] = True
-
-            if node.key == "sync":
-                if key_chr in ("s", "S"):
-                    t = threading.Thread(
-                        target=run_sync,
-                        args=(False, self.progress, self.state),
-                        daemon=True)
-                    t.start()
-                elif key_chr in ("d", "D"):
-                    t = threading.Thread(
-                        target=run_sync,
-                        args=(True, self.progress, self.state),
-                        daemon=True)
-                    t.start()
-
-            elif node.key.startswith("device:"):
-                codename   = node.key.split(":", 1)[1]
-                section    = self.state.get(f"device_section:{codename}", "ui")
-                ui_options = self.state.get(f"device_ui_options:{codename}",
-                                            ["ubuntu-desktop-minimal", "phosh", "plasma-mobile"])
-                n_ui       = len(ui_options)
-                actions    = self.state.get(f"device_actions:{codename}", [])
-                n_acts     = len(actions)
-
-                if key == curses.KEY_UP:
-                    if section == "ui":
-                        idx = self.state.get(f"device_ui_idx:{codename}", 0)
-                        if idx == 0:
-                            pass  # top of ui section
-                        else:
-                            self.state[f"device_ui_idx:{codename}"] = idx - 1
-                    else:
-                        idx = self.state.get(f"device_action:{codename}", 0)
-                        if idx == 0:
-                            self.state[f"device_section:{codename}"] = "ui"
-                        else:
-                            self.state[f"device_action:{codename}"] = idx - 1
-
-                elif key == curses.KEY_DOWN:
-                    if section == "ui":
-                        idx = self.state.get(f"device_ui_idx:{codename}", 0)
-                        if idx >= n_ui - 1:
-                            self.state[f"device_section:{codename}"] = "actions"
-                        else:
-                            self.state[f"device_ui_idx:{codename}"] = idx + 1
-                    else:
-                        idx = self.state.get(f"device_action:{codename}", 0)
-                        self.state[f"device_action:{codename}"] = min(idx + 1, n_acts - 1)
-
-                elif key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
-                    if section == "ui":
-                        # Save selected UI back to device.conf
-                        ui_idx  = self.state.get(f"device_ui_idx:{codename}", 0)
-                        new_ui  = ui_options[ui_idx]
-                        conf_p  = DEVICES_DIR / codename / "device.conf"
-                        import re as _re
-                        txt     = conf_p.read_text()
-                        if _re.search(r'^DEVICE_UI=', txt, _re.MULTILINE):
-                            txt = _re.sub(r'^DEVICE_UI="[^"]*"',
-                                          f'DEVICE_UI="{new_ui}"', txt, flags=_re.MULTILINE)
-                        else:
-                            txt += f'\nDEVICE_UI="{new_ui}"\n'
-                        conf_p.write_text(txt)
-                        self.progress.done(f"UI set to {new_ui} for {codename}")
-                    else:
-                        idx    = self.state.get(f"device_action:{codename}", 0)
-                        action = actions[idx][0] if actions else None
-                        if action == "build":
-                            self.progress.update(f"Building {codename}...", 0.1)
-                            t = threading.Thread(
-                                target=self._run_build,
-                                args=(codename,),
-                                daemon=True)
-                            t.start()
-                        elif action == "edit":
-                            editor = os.environ.get("EDITOR", "nano")
-                            conf   = str(DEVICES_DIR / codename / "device.conf")
-                            curses.endwin()
-                            subprocess.run([editor, conf])
-                            self._make_wins()
-
-        return True
-
-    # ── Actions ───────────────────────────────────────────────────────────────
-
-    def _run_build(self, codename: str):
-        build_sh = FORK_DIR / "build.sh"
-        if not build_sh.exists():
-            self.progress.done("build.sh not found in Mobuntu/")
-            return
-
-        conf_path = DEVICES_DIR / codename / "device.conf"
-        device_ui = "ubuntu-desktop-minimal"
-        if conf_path.exists():
-            for line in conf_path.read_text().splitlines():
-                if line.startswith("DEVICE_UI="):
-                    device_ui = line.split("=", 1)[1].strip().strip('"'  )
+        val = val.lstrip()
+        # If value starts with a quote, take everything up to the matching
+        # closing quote; otherwise, take everything up to the first
+        # whitespace-or-#.
+        if val.startswith('"') or val.startswith("'"):
+            quote = val[0]
+            end = val.find(quote, 1)
+            val = val[1:end] if end != -1 else val[1:]
+        else:
+            # strip inline comment
+            for sep in ("  #", "\t#", " #"):
+                idx = val.find(sep)
+                if idx != -1:
+                    val = val[:idx]
                     break
+            val = val.rstrip()
 
-        # Enter lockout mode
-        self.state["build_log_device"] = codename
-        self.state["build_log_lines"]  = []
-        self.state["build_log_status"] = "running"
-        self.state["show_log"]         = True
-        self.state["lockout"]          = True
+        # Resolve ${VAR:-default} -> default (one-pass; nested not supported).
+        match = _VAR_DEFAULT_RE.fullmatch(val)
+        if match is not None:
+            val = match.group(2)
 
-        cmd = ["bash", str(build_sh), "-d", codename, "-u", device_ui]
-        self.progress.update(f"Building {codename}...", 0.1)
+        out[key] = val
+    return out
 
+
+def discover_variants(root: Path) -> List[Variant]:
+    found: List[Variant] = []
+    for name in KNOWN_VARIANTS:
+        vpath = root / name
+        env = vpath / "build.env"
+        sh = vpath / "build.sh"
+        if vpath.is_dir() and env.is_file() and sh.is_file():
+            cfg = parse_build_env(env)
+            found.append(Variant(
+                name=name,
+                path=vpath,
+                build_env=env,
+                build_sh=sh,
+                has_devkit_meta=(vpath / ".devkit").exists(),
+                config=cfg,
+            ))
+    return found
+
+
+# -----------------------------------------------------------------------------
+# Build runner — captures live output for the right pane.
+# -----------------------------------------------------------------------------
+
+class BuildRunner:
+    def __init__(self, max_lines: int = 5000) -> None:
+        self.lines: Deque[str] = deque(maxlen=max_lines)
+        self.proc: Optional[subprocess.Popen] = None
+        self.thread: Optional[threading.Thread] = None
+        self.lock = threading.Lock()
+        self.exit_code: Optional[int] = None
+        self.running = False
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def append(self, line: str) -> None:
+        with self.lock:
+            self.lines.append(line)
+
+    def snapshot(self) -> List[str]:
+        with self.lock:
+            return list(self.lines)
+
+    def clear(self) -> None:
+        with self.lock:
+            self.lines.clear()
+            self.exit_code = None
+
+    def start(self, cwd: Path, cmd: List[str], env_extra: Optional[dict] = None) -> None:
+        if self.running:
+            self.append("[devkit] A build is already running. Cancel it first.")
+            return
+        self.clear()
+        self.append(f"[devkit] cd {cwd}")
+        self.append(f"[devkit] exec: {' '.join(cmd)}")
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
         try:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, cwd=str(FORK_DIR), bufsize=1)
+            self.proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                universal_newlines=True,
+                env=env,
+            )
+        except OSError as exc:
+            self.append(f"[devkit ERROR] {exc}")
+            self.running = False
+            self.exit_code = 127
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._reader, daemon=True)
+        self.thread.start()
 
-            total_steps = 8
-            step = 0
-            for line in proc.stdout:
-                line = line.rstrip()
-                self.state["build_log_lines"].append(line)
-                if "====" in line:
-                    step = min(step + 1, total_steps)
-                    self.progress.update(line.strip("= ").strip(),
-                                         step / total_steps)
+    def _reader(self) -> None:
+        assert self.proc is not None and self.proc.stdout is not None
+        for line in self.proc.stdout:
+            self.append(line.rstrip("\n"))
+        self.proc.wait()
+        self.exit_code = self.proc.returncode
+        self.append(f"[devkit] process exited with code {self.exit_code}")
+        self.running = False
 
-            proc.wait()
-            if proc.returncode == 0:
-                self.state["build_log_status"] = "complete"
-                self.progress.done("Build complete")
-            else:
-                self.state["build_log_status"] = "failed"
-                self.progress.done(f"Build failed — see log")
-        except Exception as e:
-            self.state["build_log_status"] = "error"
-            self.state["build_log_lines"].append(str(e))
-            self.progress.done(f"Error: {e}")
-        finally:
-            self.state["lockout"] = False
-
-    # ── Main loop ─────────────────────────────────────────────────────────────
-
-    def run(self):
-        self._init_colors()
-        curses.curs_set(0)
-        self.scr.nodelay(True)
-        self.scr.timeout(100)
-
-        self.progress.update("Mobuntu DevKit ready", 0.0)
-        self.progress.active = False
-
-
-
-        running = True
-        while running:
+    def cancel(self) -> None:
+        if self.running and self.proc is not None:
+            self.append("[devkit] sending SIGTERM")
             try:
-                self.draw()
-                key = self.scr.getch()
-                if key != -1:
-                    running = self.handle_key(key)
-            except curses.error:
+                self.proc.terminate()
+            except OSError:
                 pass
+
+
+# -----------------------------------------------------------------------------
+# TUI
+# -----------------------------------------------------------------------------
+
+ACTIONS = [
+    ("b", "Build (full pipeline)",      "build_full"),
+    ("s", "Build single stage...",      "build_stage"),
+    ("c", "Clean build/ directory",     "clean"),
+    ("e", "Edit build.env (in $EDITOR)","edit_env"),
+    ("v", "View build.env",             "view_env"),
+    ("k", "Cancel running build",       "cancel"),
+    ("r", "Refresh variant list",       "refresh"),
+    ("q", "Quit",                       "quit"),
+]
+
+
+def safe_addstr(win, y: int, x: int, text: str, attr: int = 0) -> None:
+    """addstr that won't blow up on edge writes or non-ascii."""
+    try:
+        max_y, max_x = win.getmaxyx()
+        if y >= max_y or x >= max_x:
+            return
+        text = text.encode("ascii", "replace").decode("ascii")
+        win.addnstr(y, x, text, max_x - x - 1, attr)
+    except curses.error:
+        pass
+
+
+class DevkitTUI:
+    def __init__(self, stdscr, root: Path, variants: List[Variant]) -> None:
+        self.stdscr = stdscr
+        self.root = root
+        self.variants = variants
+        self.selected = 0
+        self.runner = BuildRunner()
+        self.scroll = 0
+        self.status = f"Repo root: {root}"
+        self.last_action_msg = ""
+
+    # -- input ----------------------------------------------------------------
+
+    def prompt_input(self, prompt: str) -> str:
+        max_y, max_x = self.stdscr.getmaxyx()
+        win = curses.newwin(3, max_x - 4, max_y // 2 - 1, 2)
+        win.box()
+        safe_addstr(win, 0, 2, f" {prompt} ", curses.A_REVERSE)
+        win.refresh()
+        curses.echo()
+        curses.curs_set(1)
+        try:
+            raw = win.getstr(1, 2, max_x - 8)
+        except curses.error:
+            raw = b""
+        curses.noecho()
+        curses.curs_set(0)
+        return raw.decode("utf-8", "replace").strip()
+
+    # -- actions --------------------------------------------------------------
+
+    def current(self) -> Optional[Variant]:
+        if not self.variants:
+            return None
+        return self.variants[self.selected]
+
+    def action_build_full(self) -> None:
+        v = self.current()
+        if v is None:
+            self.last_action_msg = "No variant selected"
+            return
+        self.runner.start(cwd=v.path, cmd=["sudo", "bash", "./build.sh"])
+        self.last_action_msg = f"Build started: {v.name}"
+
+    def action_build_stage(self) -> None:
+        v = self.current()
+        if v is None:
+            return
+        stages = self.prompt_input("Stages (e.g. '01 02' or '04 05')")
+        if not stages:
+            self.last_action_msg = "Cancelled (no stages given)"
+            return
+        self.runner.start(
+            cwd=v.path,
+            cmd=["sudo", "-E", "bash", "./build.sh"],
+            env_extra={"STAGES": stages},
+        )
+        self.last_action_msg = f"Build started ({v.name}, stages={stages})"
+
+    def action_clean(self) -> None:
+        v = self.current()
+        if v is None:
+            return
+        confirm = self.prompt_input(f"Type DELETE to wipe {v.path}/build/")
+        if confirm != "DELETE":
+            self.last_action_msg = "Clean cancelled"
+            return
+        self.runner.start(cwd=v.path, cmd=["sudo", "rm", "-rf", "build"])
+        self.last_action_msg = f"Cleaning {v.name}/build/"
+
+    def action_view_env(self) -> None:
+        v = self.current()
+        if v is None:
+            return
+        try:
+            text = v.build_env.read_text()
+        except OSError as exc:
+            self.last_action_msg = f"Cannot read: {exc}"
+            return
+        self.runner.clear()
+        self.runner.append(f"[devkit] view {v.build_env}")
+        for line in text.splitlines():
+            self.runner.append(line)
+        self.last_action_msg = "Loaded build.env"
+
+    def action_edit_env(self) -> None:
+        v = self.current()
+        if v is None:
+            return
+        editor = os.environ.get("EDITOR", "nano")
+        curses.endwin()
+        try:
+            subprocess.call([editor, str(v.build_env)])
+        finally:
+            self.stdscr.refresh()
+            curses.curs_set(0)
+        # Reparse
+        v.config = parse_build_env(v.build_env)
+        self.last_action_msg = "Edited build.env (config reloaded)"
+
+    def action_cancel(self) -> None:
+        if not self.runner.is_running():
+            self.last_action_msg = "No build running"
+            return
+        self.runner.cancel()
+        self.last_action_msg = "Cancel signal sent"
+
+    def action_refresh(self) -> None:
+        self.variants = discover_variants(self.root)
+        if self.selected >= len(self.variants):
+            self.selected = max(0, len(self.variants) - 1)
+        self.last_action_msg = f"Refreshed ({len(self.variants)} variants)"
+
+    # -- drawing --------------------------------------------------------------
+
+    def draw_header(self) -> None:
+        max_y, max_x = self.stdscr.getmaxyx()
+        title = " Mobuntu Devkit  --  auto-runner "
+        safe_addstr(self.stdscr, 0, 0, " " * (max_x - 1), curses.A_REVERSE)
+        safe_addstr(self.stdscr, 0, 2, title, curses.A_REVERSE | curses.A_BOLD)
+        safe_addstr(self.stdscr, 0, max_x - len(self.status) - 3, self.status,
+                    curses.A_REVERSE)
+
+    def draw_left(self, y0: int, h: int, w: int) -> None:
+        # Variant tree
+        safe_addstr(self.stdscr, y0, 1, "[ Variants ]", curses.A_BOLD)
+        if not self.variants:
+            safe_addstr(self.stdscr, y0 + 2, 2,
+                        "No Mobuntu variants found.")
+            safe_addstr(self.stdscr, y0 + 3, 2,
+                        f"Searched: {self.root}")
+            safe_addstr(self.stdscr, y0 + 5, 2,
+                        "Expected one of:")
+            for i, name in enumerate(KNOWN_VARIANTS):
+                safe_addstr(self.stdscr, y0 + 6 + i, 4, f"- {name}/")
+            return
+
+        for i, v in enumerate(self.variants):
+            attr = curses.A_REVERSE if i == self.selected else 0
+            line = v.label
+            safe_addstr(self.stdscr, y0 + 2 + i * 2, 2, line.ljust(w - 4), attr)
+            sub = f"  -> {v.path}"
+            safe_addstr(self.stdscr, y0 + 3 + i * 2, 2, sub.ljust(w - 4),
+                        curses.A_DIM)
+
+        # Actions block
+        ay = y0 + 2 + len(self.variants) * 2 + 2
+        safe_addstr(self.stdscr, ay, 1, "[ Actions ]", curses.A_BOLD)
+        for i, (key, label, _) in enumerate(ACTIONS):
+            safe_addstr(self.stdscr, ay + 2 + i, 2, f" {key}  {label}")
+
+    def draw_right(self, y0: int, x0: int, h: int, w: int) -> None:
+        # Title bar
+        v = self.current()
+        title = "[ Build Output ]"
+        if v is not None:
+            title = f"[ {v.name}  --  build output ]"
+        safe_addstr(self.stdscr, y0, x0 + 1, title, curses.A_BOLD)
+
+        # Running indicator
+        if self.runner.is_running():
+            ind = "  [ RUNNING ]"
+            safe_addstr(self.stdscr, y0, x0 + w - len(ind) - 2, ind,
+                        curses.A_BOLD | curses.A_BLINK)
+        elif self.runner.exit_code is not None:
+            tag = "[ OK ]" if self.runner.exit_code == 0 else f"[ FAIL {self.runner.exit_code} ]"
+            attr = curses.A_BOLD
+            safe_addstr(self.stdscr, y0, x0 + w - len(tag) - 2, tag, attr)
+
+        lines = self.runner.snapshot()
+        max_visible = h - 4
+        if len(lines) > max_visible:
+            lines = lines[-max_visible:]
+        for i, line in enumerate(lines):
+            safe_addstr(self.stdscr, y0 + 2 + i, x0 + 2, line)
+
+    def draw_footer(self) -> None:
+        max_y, max_x = self.stdscr.getmaxyx()
+        msg = self.last_action_msg or "UP/DOWN: select  -  letter keys: action  -  q: quit"
+        safe_addstr(self.stdscr, max_y - 1, 0, " " * (max_x - 1),
+                    curses.A_REVERSE)
+        safe_addstr(self.stdscr, max_y - 1, 2, msg,
+                    curses.A_REVERSE)
+
+    def draw(self) -> None:
+        self.stdscr.erase()
+        max_y, max_x = self.stdscr.getmaxyx()
+        if max_y < 12 or max_x < 70:
+            safe_addstr(self.stdscr, 0, 0,
+                        "Terminal too small (need >= 70x12). Resize and press any key.")
+            self.stdscr.refresh()
+            return
+
+        self.draw_header()
+
+        # Split panes: left ~38%, right rest, with vertical separator
+        left_w = max(28, int(max_x * 0.38))
+        right_x = left_w + 1
+        right_w = max_x - right_x
+        body_y = 2
+        body_h = max_y - body_y - 1
+
+        # Left pane border
+        for y in range(body_y, body_y + body_h):
+            safe_addstr(self.stdscr, y, left_w, "|", curses.A_DIM)
+
+        self.draw_left(body_y, body_h, left_w)
+        self.draw_right(body_y, right_x, body_h, right_w)
+        self.draw_footer()
+        self.stdscr.refresh()
+
+    # -- main loop ------------------------------------------------------------
+
+    def loop(self) -> None:
+        curses.curs_set(0)
+        self.stdscr.nodelay(True)
+        self.stdscr.timeout(150)
+
+        action_map = {key: name for key, _, name in ACTIONS}
+
+        while True:
+            self.draw()
+            try:
+                ch = self.stdscr.getch()
             except KeyboardInterrupt:
                 break
+            if ch == -1:
+                continue
+            if ch in (curses.KEY_UP, ord("k")):
+                if self.variants:
+                    self.selected = (self.selected - 1) % len(self.variants)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                if self.variants:
+                    self.selected = (self.selected + 1) % len(self.variants)
+            elif ch in (ord("q"), ord("Q")):
+                if self.runner.is_running():
+                    confirm = self.prompt_input("Build is running. Cancel and quit? (y/N)")
+                    if confirm.lower() != "y":
+                        continue
+                    self.runner.cancel()
+                break
+            elif 0 < ch < 256:
+                key = chr(ch).lower()
+                act = action_map.get(key)
+                if act is None:
+                    continue
+                handler = getattr(self, f"action_{act}", None)
+                if handler is not None:
+                    handler()
+                # tiny pause so the user sees the "started" status
+                time.sleep(0.05)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Entry point
-# ══════════════════════════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
+# Entrypoint
+# -----------------------------------------------------------------------------
 
-def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "--download":
-        # Headless download mode: python3 devkit.py --download <url> <dest>
-        if not HAS_REQUESTS:
-            print("pip install requests required for downloads")
-            sys.exit(1)
-        url  = sys.argv[2]
-        dest = Path(sys.argv[3])
+def main() -> int:
+    here = Path(os.getcwd())
+    root = find_repo_root(here)
+    variants = discover_variants(root)
 
-        class _StdoutProgress:
-            def update(self, msg, val=None):
-                pct = f"{int((val or 0)*100):3d}%" if val is not None else "   "
-                print(f"\r{pct} {msg}", end="", flush=True)
-            def done(self, msg):
-                print(f"\r100% {msg}")
+    if "--list" in sys.argv:
+        print(f"Repo root: {root}")
+        if not variants:
+            print("No variants found.")
+            return 1
+        for v in variants:
+            print(f"  {v.name:<14}  {v.path}")
+            for k in ("UBUNTU_SUITE", "FLAVOR", "L4T_RELEASE", "RELEASE_TAG"):
+                if k in v.config:
+                    print(f"    {k}={v.config[k]}")
+        return 0
 
-        download_file(url, dest, _StdoutProgress())
-        return
+    if "--build" in sys.argv:
+        # Headless build: --build <variant_name> [stages...]
+        idx = sys.argv.index("--build")
+        try:
+            target = sys.argv[idx + 1]
+        except IndexError:
+            print("Usage: devkit.py --build <variant_name> [STAGES='01 02']")
+            return 2
+        match = next((v for v in variants if v.name == target), None)
+        if match is None:
+            print(f"No variant named {target}. Available: {[v.name for v in variants]}")
+            return 2
+        env = os.environ.copy()
+        cmd = ["sudo", "-E", "bash", "./build.sh"]
+        rc = subprocess.call(cmd, cwd=str(match.path), env=env)
+        return rc
 
-    # Warn if not root — build.sh requires it
-    if os.geteuid() != 0:
-        print("WARNING: Mobuntu DevKit should be run as root for build operations.")
-        print("Run: sudo python3 devkit.py")
-        time.sleep(2)
-
-    curses.wrapper(lambda s: DevKit(s).run())
+    try:
+        return curses.wrapper(lambda stdscr: DevkitTUI(stdscr, root, variants).loop()) or 0
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
