@@ -38,6 +38,9 @@ python3 devkit.py --build Mobuntu-L4T   # headless build
 
 Multi-device Ubuntu ARM64 image builder for SDM845 phones.
 
+Built on top of [arkadin91/mobuntu-recipes](https://github.com/arkadin91/mobuntu-recipes),
+with multi-device scaffolding and Mobuntu customizations.
+
 ### Requirements
 
 - Ubuntu 24.04 host (**do not use 26.04** — QEMU arm64 chroot regression)
